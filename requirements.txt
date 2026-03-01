@@ -1,0 +1,27 @@
+# Core LangChain and document processing
+langchain==0.1.14
+langchain-community==0.0.38
+pypdf==4.0.1
+
+# Vector store (FAISS for local storage)
+faiss-cpu==1.7.4
+
+# Embeddings (open-source)
+sentence-transformers==2.2.2
+
+# LLM - Ollama for local/open-source models (mistral, llama, etc.)
+# Note: Ollama must be installed separately from https://ollama.ai
+# Run: ollama run mistral
+
+# Web interface
+streamlit==1.28.1
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.0
+requests==2.31.0
+tqdm==4.66.1
+numpy==1.24.3
+pandas==2.1.3
+
+
