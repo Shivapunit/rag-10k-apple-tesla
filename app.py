@@ -109,9 +109,13 @@ if __name__ == "__main__":
         env_status = "🌐 Cloud" if "streamlit" in str(Path.cwd()) else "💻 Local"
         st.write(f"**Environment**: {env_status}")
 
+        # Auto-detect API usage intent from secrets
+        has_secrets = hasattr(st, "secrets") and "OLLAMA_API_KEY" in st.secrets
+        default_use_api = has_secrets
+
         # LLM Mode Selection
         st.subheader("🤖 LLM Configuration")
-        use_api = st.checkbox("Use Ollama API", value=False, help="Toggle between Local Ollama and Ollama API")
+        use_api = st.checkbox("Use Ollama API", value=default_use_api, help="Toggle between Local Ollama and Ollama API")
 
         api_key = None
         api_url = "https://api.ollama.com/v1/chat/completions"
@@ -132,7 +136,7 @@ if __name__ == "__main__":
             if not prefilled_key:
                 prefilled_key = os.getenv("OLLAMA_API_KEY", "")
             if not prefilled_url:
-                prefilled_url = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/chat")
+                prefilled_url = os.getenv("OLLAMA_API_URL", "https://api.ollama.com/v1/chat/completions")
 
             api_key = st.text_input(
                 "API Key",
@@ -173,13 +177,29 @@ if __name__ == "__main__":
         st.divider()
         st.subheader("📊 System Info")
 
+        # Determine effective credentials for fallback/forced mode
+        effective_key = api_key
+        effective_url = api_url
+        
+        if not use_api:
+            # If not manually enabled, try to fetch from secrets for fallback/forced mode
+            if hasattr(st, "secrets"):
+                effective_key = st.secrets.get("OLLAMA_API_KEY")
+                effective_url = st.secrets.get("OLLAMA_API_URL")
+            
+            # Default URL if key exists but no URL
+            if effective_key and not effective_url:
+                 effective_url = "https://api.ollama.com/v1/chat/completions"
+            elif not effective_url:
+                 effective_url = "http://localhost:11434/api/chat"
+
         # Load RAG pipeline with appropriate mode and API URL
         # If Ollama is not available locally and we are not forcing API, we still load pipeline for retrieval
         if use_api or not ollama_available:
             rag = load_rag_pipeline(
                 use_api=use_api or not ollama_available,
-                api_key=api_key if use_api else None,
-                api_url=api_url if use_api else None
+                api_key=effective_key,
+                api_url=effective_url
             )
         else:
             rag = load_rag_pipeline(use_api=False)
@@ -201,7 +221,7 @@ if __name__ == "__main__":
 
     # Determine operational mode
     is_retrieval_only = False
-    if not ollama_available and not use_api:
+    if not ollama_available and not use_api and not effective_key:
         is_retrieval_only = True
         st.warning("⚠️ **Ollama is not running.** System is in **Retrieval-Only Mode**.")
         st.info("💡 You can still search documents. The system will retrieve relevant pages, but it cannot generate AI summaries without Ollama or an API key.")
@@ -248,12 +268,15 @@ if __name__ == "__main__":
                         result = rag.answer_question(query, top_k=top_k, temperature=temperature)
                         
                         # Check if answer is the fallback message or if we are in retrieval only mode
-                        is_fallback = is_retrieval_only or "LLM Not Available" in result["answer"] or "LLM not available" in result["answer"]
+                        is_fallback = is_retrieval_only or "LLM Not Available" in result["answer"] or "LLM not available" in result["answer"] or "MockLLM" in str(type(rag.llm))
 
                         # Display answer
                         if is_fallback:
                             st.subheader("📄 Retrieved Context")
-                            st.caption("The LLM could not be reached to summarize these results. Here are the relevant excerpts from the documents:")
+                            if "System Notification" in result["answer"]:
+                                st.info(result["answer"])
+                            else:
+                                st.caption("The LLM could not be reached to summarize these results. Here are the relevant excerpts from the documents:")
                         else:
                             st.success("✅ Answer Generated")
                             st.subheader("Answer")

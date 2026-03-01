@@ -129,33 +129,55 @@ class OllamaAPILLM:
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
 
-            payload = {
-                "model": "llama3:8b-instruct",
-                "prompt": prompt,
-                "stream": False,
-                "temperature": self.temperature
-            }
+            logger.info(f"Calling External LLM API at: {self.api_url}")
 
-            logger.info(f"Calling Ollama API at: {self.api_url}")
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-
-            # Handle different response formats
-            result = response.json()
-            if "response" in result:
-                return result["response"]
-            elif "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0].get("message", {}).get("content", "")
+            # Check for OpenAI-compatible endpoint (v1/chat/completions)
+            if "/v1/chat/completions" in self.api_url:
+                payload = {
+                    "model": "llama3:8b-instruct", # Default model, can be adjusted
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": self.temperature
+                }
+                
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status()
+                
+                result = response.json()
+                if "choices" in result and len(result["choices"]) > 0:
+                    return result["choices"][0]["message"]["content"]
+                else:
+                    return f"Error: Unexpected response format from API: {result}"
+            
             else:
-                logger.warning(f"Unexpected response format: {result}")
-                return str(result)
+                # Standard Ollama API format
+                payload = {
+                    "model": "llama3:8b-instruct",
+                    "prompt": prompt,
+                    "stream": False,
+                    "temperature": self.temperature
+                }
+
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status()
+
+                # Handle different response formats
+                result = response.json()
+                if "response" in result:
+                    return result["response"]
+                elif "choices" in result and len(result["choices"]) > 0:
+                    return result["choices"][0].get("message", {}).get("content", "")
+                else:
+                    logger.warning(f"Unexpected response format: {result}")
+                    return str(result)
 
         except requests.exceptions.Timeout:
             logger.error("API request timed out (60s)")
             return "Error: Request timed out. Server may be slow or overloaded."
         except requests.exceptions.ConnectionError as e:
-            logger.error(f"Could not connect to Ollama API at {self.api_url}: {e}")
-            return f"Error: Could not connect to {self.api_url}. Make sure the Ollama server is running."
+            logger.error(f"Could not connect to API at {self.api_url}: {e}")
+            return f"Error: Could not connect to {self.api_url}. Check your URL and network."
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
                 logger.error(f"Unauthorized (401): API key may be invalid or missing. URL: {self.api_url}")
@@ -165,7 +187,7 @@ class OllamaAPILLM:
                 return f"Error: 404 Not Found. Check your API URL: {self.api_url}"
             else:
                 logger.error(f"API error {e.response.status_code}: {e}")
-                return f"Error: HTTP {e.response.status_code}"
+                return f"Error: HTTP {e.response.status_code} - {e.response.text}"
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             return f"Error: {str(e)}"
@@ -346,14 +368,13 @@ Answer:"""
                     test_response = self.llm.invoke("Hi")
                     if isinstance(test_response, str) and test_response.lower().startswith("error"):
                         logger.warning(f"Ollama API test response indicates error: {test_response}")
-                        # Fallback to MockLLM if API fails
-                        logger.info("Switching to MockLLM due to API error.")
-                        self.llm = MockLLM()
+                        # We set LLM to None if it's not working, to avoid crashing later
+                        self.llm = None
                     else:
                         logger.info("Ollama API connected successfully")
                 except Exception as e:
-                    logger.error(f"Ollama API initialization error: {e}. Switching to MockLLM.")
-                    self.llm = MockLLM()
+                    logger.error(f"Ollama API initialization error (non-fatal): {e}")
+                    self.llm = None
             else:
                 # Local Ollama if available
                 if Ollama is not None:
@@ -363,14 +384,13 @@ Answer:"""
                         self.llm.invoke("Hi")
                         logger.info(f"Local Ollama {self.llm_model_name} ready")
                     except Exception as e:
-                        logger.error(f"Local Ollama initialization error: {e}. Switching to MockLLM.")
-                        self.llm = MockLLM()
+                        logger.error(f"Local Ollama initialization error (non-fatal): {e}")
+                        self.llm = None
                 else:
-                    logger.info("Local Ollama client not available. Switching to MockLLM.")
-                    self.llm = MockLLM()
+                    logger.info("Local Ollama client not available; continuing without an LLM")
         except Exception as e:
-            logger.error(f"Critical error during LLM initialization (suppressed): {e}. Switching to MockLLM.")
-            self.llm = MockLLM()
+            logger.error(f"Critical error during LLM initialization (suppressed): {e}")
+            self.llm = None
 
     def is_indexed(self) -> bool:
         """Check if vector store already exists"""
