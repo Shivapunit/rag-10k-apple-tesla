@@ -20,12 +20,12 @@ sentence-transformers==2.2.2
 # Web interface
 streamlit==1.28.1
 
-# Utilities
+# Utilities - Updated for Python 3.13 compatibility
 python-dotenv==1.0.0
-pydantic==2.5.0
-requests==2.31.0
-tqdm==4.66.1
-numpy==1.24.3
-pandas==2.1.3
+pydantic>=2.5.0
+requests>=2.31.0
+tqdm>=4.66.1
+numpy>=1.26.0
+pandas>=2.1.3
 
 
