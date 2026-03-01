@@ -9,7 +9,7 @@ Supports:
 
 import logging
 import warnings
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple, Union
 from pathlib import Path
 import json
 import os
@@ -90,6 +90,39 @@ class MockLLM:
             "However, the system has successfully retrieved the relevant documents for your query. "
             "Please review the **Sources** section below to find the specific answer."
         )
+
+
+class HuggingFaceAPILLM:
+    """HuggingFace Inference API client"""
+    def __init__(self, api_token: str, model: str = "mistralai/Mistral-7B-Instruct-v0.2"):
+        self.api_token = api_token
+        self.api_url = f"https://api-inference.huggingface.co/models/{model}"
+        self.temperature = 0.3
+        
+    def invoke(self, prompt: str) -> str:
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": 512,
+                "temperature": self.temperature,
+                "return_full_text": False
+            }
+        }
+        try:
+            logger.info(f"Calling HuggingFace API: {self.api_url}")
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            result = response.json()
+            # HF returns list of dicts: [{'generated_text': '...'}]
+            if isinstance(result, list) and len(result) > 0 and 'generated_text' in result[0]:
+                return result[0]['generated_text']
+            elif isinstance(result, dict) and 'error' in result:
+                return f"HuggingFace API Error: {result['error']}"
+            return str(result)
+        except Exception as e:
+            logger.error(f"HF API error: {e}")
+            return f"Error calling HuggingFace API: {str(e)}"
 
 
 class OllamaAPILLM:
@@ -294,6 +327,7 @@ Answer:"""
         use_api: bool = False,
         ollama_api_key: Optional[str] = None,
         ollama_api_url: str = None,
+        hf_token: Optional[str] = None,
         page_level: bool = False,
         retrieval_mode: str = "hybrid",  # options: 'pageindex', 'vector', 'hybrid'
     ):
@@ -313,6 +347,7 @@ Answer:"""
         self.use_api = use_api
         self.ollama_api_key = ollama_api_key
         self.ollama_api_url = ollama_api_url or os.getenv("OLLAMA_API_URL") or "http://localhost:11434/api/chat"
+        self.hf_token = hf_token
         self.page_level = page_level
         self.retrieval_mode = retrieval_mode
         self.page_retriever = None
@@ -357,40 +392,48 @@ Answer:"""
             # Do not raise here, allow pipeline to init without embeddings (will fail later if needed)
             self.embeddings = None
 
-        # Initialize LLM (Ollama - local or API) but do not raise if unavailable
+        # Initialize LLM
         logger.info(f"Initializing LLM: {self.llm_model_name}")
-
         self.llm = None
-        try:
-            if self.use_api:
-                try:
-                    self.llm = OllamaAPILLM(api_key=self.ollama_api_key, api_url=self.ollama_api_url)
-                    test_response = self.llm.invoke("Hi")
-                    if isinstance(test_response, str) and test_response.lower().startswith("error"):
-                        logger.warning(f"Ollama API test response indicates error: {test_response}")
-                        # We set LLM to None if it's not working, to avoid crashing later
-                        self.llm = None
-                    else:
-                        logger.info("Ollama API connected successfully")
-                except Exception as e:
-                    logger.error(f"Ollama API initialization error (non-fatal): {e}")
-                    self.llm = None
-            else:
-                # Local Ollama if available
-                if Ollama is not None:
-                    try:
-                        self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
-                        # Test connection
-                        self.llm.invoke("Hi")
-                        logger.info(f"Local Ollama {self.llm_model_name} ready")
-                    except Exception as e:
-                        logger.error(f"Local Ollama initialization error (non-fatal): {e}")
-                        self.llm = None
+        
+        # 1. Try HuggingFace API if token provided
+        if self.hf_token:
+            try:
+                self.llm = HuggingFaceAPILLM(api_token=self.hf_token)
+                logger.info("Initialized HuggingFace API LLM")
+            except Exception as e:
+                logger.error(f"HuggingFace API initialization error: {e}")
+        
+        # 2. Try Ollama API if configured
+        elif self.use_api:
+            try:
+                self.llm = OllamaAPILLM(api_key=self.ollama_api_key, api_url=self.ollama_api_url)
+                test_response = self.llm.invoke("Hi")
+                if isinstance(test_response, str) and test_response.lower().startswith("error"):
+                    logger.warning(f"Ollama API test response indicates error: {test_response}")
+                    # Fallback to MockLLM if API fails
+                    logger.info("Switching to MockLLM due to API error.")
+                    self.llm = MockLLM()
                 else:
-                    logger.info("Local Ollama client not available; continuing without an LLM")
-        except Exception as e:
-            logger.error(f"Critical error during LLM initialization (suppressed): {e}")
-            self.llm = None
+                    logger.info("Ollama API connected successfully")
+            except Exception as e:
+                logger.error(f"Ollama API initialization error: {e}. Switching to MockLLM.")
+                self.llm = MockLLM()
+        
+        # 3. Try Local Ollama
+        else:
+            if Ollama is not None:
+                try:
+                    self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
+                    # Test connection
+                    self.llm.invoke("Hi")
+                    logger.info(f"Local Ollama {self.llm_model_name} ready")
+                except Exception as e:
+                    logger.error(f"Local Ollama initialization error: {e}. Switching to MockLLM.")
+                    self.llm = MockLLM()
+            else:
+                logger.info("Local Ollama client not available. Switching to MockLLM.")
+                self.llm = MockLLM()
 
     def is_indexed(self) -> bool:
         """Check if vector store already exists"""
@@ -600,7 +643,7 @@ Answer:"""
                 self.llm.temperature = temperature
 
             # 1. Retrieval
-            retrieved_docs = []
+            retrieved_docs_with_scores = []
             try:
                 logger.info(f"Retrieving documents for query: {query[:100]}")
                 k = top_k if top_k else self.top_k
@@ -608,42 +651,73 @@ Answer:"""
                 if self.retrieval_mode == 'pageindex':
                     if not self.page_retriever:
                         return {"answer": "Error: PageIndex retriever not available.", "sources": []}
-                    page_hits = self.page_retriever.retrieve(query, k=k)
-                    retrieved_docs = [doc for doc, score in page_hits]
+                    # PageIndex returns (doc, score)
+                    retrieved_docs_with_scores = self.page_retriever.retrieve(query, k=k)
+                
                 elif self.retrieval_mode == 'vector':
-                    # Use invoke instead of get_relevant_documents
-                    if hasattr(self.retriever, 'invoke'):
-                        retrieved_docs = self.retriever.invoke(query)[:k]
+                    # Try to get scores if supported
+                    if hasattr(self.vectorstore, "similarity_search_with_score"):
+                        retrieved_docs_with_scores = self.vectorstore.similarity_search_with_score(query, k=k)
                     else:
-                        retrieved_docs = self.retriever.get_relevant_documents(query)[:k]
+                        # Fallback to just docs
+                        if hasattr(self.retriever, 'invoke'):
+                            docs = self.retriever.invoke(query)[:k]
+                        else:
+                            docs = self.retriever.get_relevant_documents(query)[:k]
+                        retrieved_docs_with_scores = [(d, None) for d in docs]
+                
                 else:  # hybrid
                     # Combine pageindex and vector results; simple merge and dedupe
                     results = []
                     if self.page_retriever:
                         page_hits = self.page_retriever.retrieve(query, k=k)
-                        results.extend([doc for doc, score in page_hits])
+                        results.extend(page_hits) # already (doc, score)
                     
                     # Use hybrid retriever if available, otherwise vector retriever
                     if self.hybrid_retriever:
+                        # Hybrid retriever now returns (doc, score)
                         vector_hits = self.hybrid_retriever.retrieve(query)
                     else:
-                        if hasattr(self.retriever, 'invoke'):
-                            vector_hits = self.retriever.invoke(query)[:k]
+                        if hasattr(self.vectorstore, "similarity_search_with_score"):
+                            vector_hits = self.vectorstore.similarity_search_with_score(query, k=k)
                         else:
-                            vector_hits = self.retriever.get_relevant_documents(query)[:k]
+                            if hasattr(self.retriever, 'invoke'):
+                                docs = self.retriever.invoke(query)[:k]
+                            else:
+                                docs = self.retriever.get_relevant_documents(query)[:k]
+                            vector_hits = [(d, None) for d in docs]
                     
                     results.extend(vector_hits)
-                    # dedupe preserving order
+                    
+                    # Dedupe preserving order
                     seen = set()
                     deduped = []
-                    for d in results:
-                        doc_id = (d.metadata.get('source'), d.metadata.get('page'), d.metadata.get('chunk_idx', 0))
-                        if doc_id not in seen:
-                            seen.add(doc_id)
-                            deduped.append(d)
-                    retrieved_docs = deduped[:k]
+                    for item in results:
+                        try:
+                            # Handle both (doc, score) and doc
+                            if isinstance(item, tuple):
+                                doc = item[0]
+                                score = item[1]
+                            else:
+                                doc = item
+                                score = None
+                            
+                            # Robustness check for metadata
+                            if not hasattr(doc, 'metadata'):
+                                logger.warning(f"Skipping item with no metadata: {type(doc)}")
+                                continue
 
-                if not retrieved_docs:
+                            doc_id = (doc.metadata.get('source'), doc.metadata.get('page'), doc.metadata.get('chunk_idx', 0))
+                            if doc_id not in seen:
+                                seen.add(doc_id)
+                                deduped.append((doc, score))
+                        except Exception as e:
+                            logger.error(f"Error processing item in dedupe: {e}")
+                            continue
+
+                    retrieved_docs_with_scores = deduped[:k]
+
+                if not retrieved_docs_with_scores:
                     return {
                         "answer": "No relevant documents found in the database.",
                         "sources": []
@@ -655,10 +729,21 @@ Answer:"""
                     "sources": []
                 }
 
-            # 2. Extract Sources
+            # 2. Extract Sources and Context
             sources = []
+            context_docs = []
+            
             if return_sources:
-                for doc in retrieved_docs:
+                for item in retrieved_docs_with_scores:
+                    if isinstance(item, tuple):
+                        doc = item[0]
+                        score = item[1]
+                    else:
+                        doc = item
+                        score = None
+                    
+                    context_docs.append(doc)
+                    
                     source_path = doc.metadata.get("source", "")
                     source_file = Path(source_path).name if source_path else "Unknown"
                     
@@ -667,7 +752,8 @@ Answer:"""
                         "source_file": source_file,
                         "item": doc.metadata.get("item", "Unknown"),
                         "page": str(doc.metadata.get("page", "N/A")),
-                        "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+                        "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
+                        "score": float(score) if score is not None else None
                     })
 
             # 3. Generation
@@ -675,7 +761,7 @@ Answer:"""
             if self.llm:
                 try:
                     # Build context from retrieved documents
-                    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                    context = "\n\n".join([doc.page_content for doc in context_docs])
                     
                     # Format the prompt directly (no dependency on langchain PromptTemplate)
                     formatted_prompt = self.FINANCIAL_QA_PROMPT.format(context=context, question=query)
