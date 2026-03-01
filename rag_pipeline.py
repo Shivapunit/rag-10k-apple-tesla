@@ -13,6 +13,17 @@ from pathlib import Path
 import json
 import os
 import requests
+import pickle
+
+# Try to import Embeddings base class
+try:
+    from langchain.schema.embeddings import Embeddings
+except ImportError:
+    try:
+        from langchain_core.embeddings import Embeddings
+    except ImportError:
+        class Embeddings:
+            pass
 
 # Vector store and embeddings
 try:
@@ -139,8 +150,7 @@ class OllamaAPILLM:
             return f"Error: {str(e)}"
 
 
-
-class FallbackEmbeddings:
+class FallbackEmbeddings(Embeddings):
     """Simple TF-IDF based embeddings wrapper for environments without sentence-transformers."""
     def __init__(self):
         try:
@@ -172,6 +182,33 @@ class FallbackEmbeddings:
             self.fit([query])
         emb = self.vectorizer.transform([query])
         return emb.toarray()[0].tolist()
+    
+    def __call__(self, text: Any) -> List[float]:
+        """Make the object callable to satisfy some FAISS implementations"""
+        if isinstance(text, list):
+            return self.embed_documents(text)
+        return self.embed_query(text)
+
+    def save(self, path: Path):
+        try:
+            with open(path / "tfidf_model.pkl", "wb") as f:
+                pickle.dump(self.vectorizer, f)
+            logger.info(f"Saved TF-IDF model to {path}")
+        except Exception as e:
+            logger.error(f"Failed to save TF-IDF model: {e}")
+
+    def load(self, path: Path):
+        model_path = path / "tfidf_model.pkl"
+        if model_path.exists():
+            try:
+                with open(model_path, "rb") as f:
+                    self.vectorizer = pickle.load(f)
+                self._fit = True
+                logger.info(f"Loaded TF-IDF model from {path}")
+            except Exception as e:
+                logger.error(f"Failed to load TF-IDF model: {e}")
+        else:
+            logger.warning(f"TF-IDF model not found at {model_path}")
 
 
 class RAGPipeline:
@@ -351,6 +388,11 @@ Answer:"""
 
             # Save vector store
             self.vectorstore.save_local(str(self.vector_store_dir))
+            
+            # Save embeddings model if it's FallbackEmbeddings
+            if isinstance(self.embeddings, FallbackEmbeddings):
+                self.embeddings.save(self.vector_store_dir)
+                
             logger.info(f"Vector store saved to {self.vector_store_dir}")
 
             # Create retriever
@@ -404,6 +446,11 @@ Answer:"""
                 return False
 
             logger.info(f"Loading vector store from {self.vector_store_dir}")
+            
+            # Load embeddings model if it's FallbackEmbeddings
+            if isinstance(self.embeddings, FallbackEmbeddings):
+                self.embeddings.load(self.vector_store_dir)
+            
             # Use VectorStoreClass.load_local if available (FAISS or SimpleVectorStore)
             try:
                 self.vectorstore = VectorStoreClass.load_local(
@@ -491,57 +538,56 @@ Answer:"""
             if self.llm:
                 self.llm.temperature = temperature
 
-            # Retrieve relevant chunks depending on retrieval_mode
-            logger.info(f"Retrieving documents for query: {query[:100]}")
-            k = top_k if top_k else self.top_k
+            # 1. Retrieval
+            retrieved_docs = []
+            try:
+                logger.info(f"Retrieving documents for query: {query[:100]}")
+                k = top_k if top_k else self.top_k
 
-            if self.retrieval_mode == 'pageindex':
-                if not self.page_retriever:
-                    return {"answer": "Error: PageIndex retriever not available.", "sources": []}
-                page_hits = self.page_retriever.retrieve(query, k=k)
-                retrieved_docs = [doc for doc, score in page_hits]
-            elif self.retrieval_mode == 'vector':
-                retrieved_docs = self.retriever.get_relevant_documents(query)[:k]
-            else:  # hybrid
-                # Combine pageindex and vector results; simple merge and dedupe
-                results = []
-                if self.page_retriever:
+                if self.retrieval_mode == 'pageindex':
+                    if not self.page_retriever:
+                        return {"answer": "Error: PageIndex retriever not available.", "sources": []}
                     page_hits = self.page_retriever.retrieve(query, k=k)
-                    results.extend([doc for doc, score in page_hits])
-                vector_hits = self.retriever.get_relevant_documents(query)[:k]
-                results.extend(vector_hits)
-                # dedupe preserving order
-                seen = set()
-                deduped = []
-                for d in results:
-                    doc_id = (d.metadata.get('source'), d.metadata.get('page'), d.metadata.get('chunk_idx', 0))
-                    if doc_id not in seen:
-                        seen.add(doc_id)
-                        deduped.append(d)
-                retrieved_docs = deduped[:k]
+                    retrieved_docs = [doc for doc, score in page_hits]
+                elif self.retrieval_mode == 'vector':
+                    retrieved_docs = self.retriever.get_relevant_documents(query)[:k]
+                else:  # hybrid
+                    # Combine pageindex and vector results; simple merge and dedupe
+                    results = []
+                    if self.page_retriever:
+                        page_hits = self.page_retriever.retrieve(query, k=k)
+                        results.extend([doc for doc, score in page_hits])
+                    
+                    # Use hybrid retriever if available, otherwise vector retriever
+                    if self.hybrid_retriever:
+                        vector_hits = self.hybrid_retriever.retrieve(query)
+                    else:
+                        vector_hits = self.retriever.get_relevant_documents(query)[:k]
+                    
+                    results.extend(vector_hits)
+                    # dedupe preserving order
+                    seen = set()
+                    deduped = []
+                    for d in results:
+                        doc_id = (d.metadata.get('source'), d.metadata.get('page'), d.metadata.get('chunk_idx', 0))
+                        if doc_id not in seen:
+                            seen.add(doc_id)
+                            deduped.append(d)
+                    retrieved_docs = deduped[:k]
 
-            if not retrieved_docs:
+                if not retrieved_docs:
+                    return {
+                        "answer": "No relevant documents found in the database.",
+                        "sources": []
+                    }
+            except Exception as e:
+                logger.error(f"Retrieval failed: {e}")
                 return {
-                    "answer": "No relevant documents found in the database.",
+                    "answer": f"Error retrieving documents: {str(e)}",
                     "sources": []
                 }
 
-            # Build context from retrieved documents
-            context = "\n\n".join([doc.page_content for doc in retrieved_docs])
-
-            # Generate answer
-            answer = "LLM not available"
-            if self.llm:
-                try:
-                    # Format the prompt directly (no dependency on langchain PromptTemplate)
-                    formatted_prompt = self.FINANCIAL_QA_PROMPT.format(context=context, question=query)
-                    logger.info("Generating answer with LLM...")
-                    answer = self.llm.invoke(formatted_prompt)
-                except Exception as e:
-                    logger.error(f"LLM generation error: {e}")
-                    answer = f"Error generating answer: {str(e)}"
-
-            # Extract sources
+            # 2. Extract Sources
             sources = []
             if return_sources:
                 for doc in retrieved_docs:
@@ -556,13 +602,27 @@ Answer:"""
                         "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
                     })
 
-            result = {
+            # 3. Generation
+            answer = "LLM not available"
+            if self.llm:
+                try:
+                    # Build context from retrieved documents
+                    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                    
+                    # Format the prompt directly (no dependency on langchain PromptTemplate)
+                    formatted_prompt = self.FINANCIAL_QA_PROMPT.format(context=context, question=query)
+                    logger.info("Generating answer with LLM...")
+                    answer = self.llm.invoke(formatted_prompt)
+                except Exception as e:
+                    logger.error(f"LLM generation error: {e}")
+                    answer = f"Error generating answer: {str(e)}"
+            else:
+                answer = "LLM not available. Showing retrieved documents."
+
+            return {
                 "answer": answer.strip(),
                 "sources": sources
             }
-
-            logger.info("Answer generated successfully")
-            return result
 
         except Exception as e:
             logger.error(f"Error answering question: {e}")
@@ -652,6 +712,35 @@ if not VECTORSTORE_AVAILABLE:
                 search_kwargs = {'k': 5}
             k = int(search_kwargs.get('k', 5))
             return SimpleRetriever(self, k)
+            
+        def similarity_search_with_score(self, query: str, k: int = 5):
+            """Return docs and similarity scores"""
+            try:
+                qvec = _np.array(self.embedding_obj.embed_query(query))
+            except Exception:
+                # fallback to zero vector
+                if self.embeddings.size > 0:
+                    qvec = _np.zeros(self.embeddings.shape[1])
+                else:
+                    return []
+
+            if self.embeddings.size == 0:
+                return []
+
+            emb = self.embeddings
+            qnorm = _np.linalg.norm(qvec) + 1e-12
+            norms = _np.linalg.norm(emb, axis=1) + 1e-12
+            dots = emb.dot(qvec)
+            sims = dots / (norms * qnorm)
+            
+            # Top k
+            idx = _np.argsort(-sims)[:k]
+            
+            results = []
+            for i in idx:
+                results.append((self.docs[i], float(sims[i])))
+            
+            return results
 
     class SimpleRetriever:
         def __init__(self, vectorstore: SimpleVectorStore, k: int = 5):
@@ -659,23 +748,8 @@ if not VECTORSTORE_AVAILABLE:
             self.k = k
 
         def get_relevant_documents(self, query: str):
-            try:
-                qvec = _np.array(self.vs.embedding_obj.embed_query(query))
-            except Exception:
-                # fallback to zero vector
-                qvec = _np.zeros(self.vs.embeddings.shape[1])
-
-            if self.vs.embeddings.size == 0:
-                return []
-
-            # cosine similarity
-            emb = self.vs.embeddings
-            qnorm = _np.linalg.norm(qvec) + 1e-12
-            norms = _np.linalg.norm(emb, axis=1) + 1e-12
-            dots = emb.dot(qvec)
-            sims = dots / (norms * qnorm)
-            idx = _np.argsort(-sims)[:self.k]
-            return [self.vs.docs[i] for i in idx]
+            results = self.vs.similarity_search_with_score(query, k=self.k)
+            return [doc for doc, score in results]
 
     # Set the vectorstore class to the fallback
     VectorStoreClass = SimpleVectorStore
