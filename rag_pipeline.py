@@ -212,7 +212,8 @@ Answer:"""
         vector_weight: float = 0.7,
         use_api: bool = False,
         ollama_api_key: Optional[str] = None,
-        ollama_api_url: str = "https://api.ollama.com/v1/chat/completions",
+        ollama_api_url: str = None,
+        page_level: bool = False,
     ):
         """
         Initialize RAG pipeline
@@ -244,7 +245,8 @@ Answer:"""
         self.vector_weight = vector_weight
         self.use_api = use_api
         self.ollama_api_key = ollama_api_key
-        self.ollama_api_url = ollama_api_url
+        self.ollama_api_url = ollama_api_url or os.getenv("OLLAMA_API_URL") or "http://localhost:11434/api/chat"
+        self.page_level = page_level
 
         # Initialize components
         self.embeddings = None
@@ -266,18 +268,12 @@ Answer:"""
         try:
             if EMBEDDINGS_AVAILABLE:
                 try:
-                    # Try to instantiate the HuggingFace embeddings; this may fail if
-                    # sentence-transformers or torch are not installed in the environment.
                     self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model_name)
                     logger.info("Loaded HuggingFaceEmbeddings successfully")
                 except Exception as e:
                     logger.warning(f"HuggingFaceEmbeddings instantiation failed: {e}")
                     logger.info("Falling back to TF-IDF embeddings (scikit-learn)")
-                    try:
-                        self.embeddings = FallbackEmbeddings()
-                    except Exception as e2:
-                        logger.error(f"FallbackEmbeddings failed: {e2}")
-                        raise
+                    self.embeddings = FallbackEmbeddings()
             else:
                 # Use TF-IDF fallback
                 self.embeddings = FallbackEmbeddings()
@@ -286,37 +282,34 @@ Answer:"""
             logger.error(f"Embeddings initialization error: {e}")
             raise
 
-        # Initialize LLM (Ollama - local or API)
+        # Initialize LLM (Ollama - local or API) but do not raise if unavailable
         logger.info(f"Initializing LLM: {self.llm_model_name}")
 
+        self.llm = None
         if self.use_api:
-            # Use Ollama API with authentication
-            logger.info("Using Ollama API with authentication")
             try:
-                self.llm = OllamaAPILLM(
-                    api_key=self.ollama_api_key,
-                    api_url=self.ollama_api_url
-                )
-                # Test API connection
+                self.llm = OllamaAPILLM(api_key=self.ollama_api_key, api_url=self.ollama_api_url)
                 test_response = self.llm.invoke("Hi")
-                if "Error" in test_response:
-                    raise Exception(f"API Error: {test_response}")
-                logger.info("Ollama API connected successfully")
+                if isinstance(test_response, str) and test_response.lower().startswith("error"):
+                    logger.warning(f"Ollama API test response indicates error: {test_response}")
+                    self.llm = None
+                else:
+                    logger.info("Ollama API connected successfully")
             except Exception as e:
-                logger.error(f"Ollama API initialization error: {e}")
-                raise
+                logger.error(f"Ollama API initialization error (non-fatal): {e}")
+                self.llm = None
         else:
-            # Use local Ollama (must be running locally)
-            logger.info("Using local Ollama instance")
-            try:
-                self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
-                # Test LLM connection
-                _ = self.llm.invoke("Hi")
-                logger.info(f"Local Ollama {self.llm_model_name} ready")
-            except Exception as e:
-                logger.error(f"Local Ollama initialization error: {e}")
-                logger.info("Make sure Ollama is running locally with: ollama run mistral")
-                raise
+            # Local Ollama if available
+            if Ollama is not None:
+                try:
+                    self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
+                    _ = self.llm.invoke("Hi")
+                    logger.info(f"Local Ollama {self.llm_model_name} ready")
+                except Exception as e:
+                    logger.error(f"Local Ollama initialization error (non-fatal): {e}")
+                    self.llm = None
+            else:
+                logger.info("Local Ollama client not available; continuing without an LLM")
 
     def is_indexed(self) -> bool:
         """Check if vector store already exists"""
@@ -341,7 +334,8 @@ Answer:"""
             # Ingest documents
             ingester = DocumentIngester(
                 chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap
+                chunk_overlap=self.chunk_overlap,
+                page_level=self.page_level  # Pass page_level to ingester
             )
             documents = ingester.ingest_from_directory(str(self.data_dir))
 
@@ -507,7 +501,7 @@ Answer:"""
             # Format the prompt directly (no dependency on langchain PromptTemplate)
             formatted_prompt = self.FINANCIAL_QA_PROMPT.format(context=context, question=query)
             logger.info("Generating answer with LLM...")
-            answer = self.llm.invoke(formatted_prompt)
+            answer = self.llm.invoke(formatted_prompt) if self.llm else "LLM not available"
 
             # Extract sources
             sources = []

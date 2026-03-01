@@ -17,16 +17,18 @@ logger = logging.getLogger(__name__)
 class DocumentIngester:
     """Ingest and process PDF documents for RAG system"""
 
-    def __init__(self, chunk_size: int = 500, chunk_overlap: int = 100):
+    def __init__(self, chunk_size: int = 500, chunk_overlap: int = 100, page_level: bool = False):
         """
         Initialize document ingester
 
         Args:
             chunk_size: Number of characters per chunk
             chunk_overlap: Number of overlapping characters between chunks
+            page_level: If True, index at the page level (one chunk per page)
         """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.page_level = page_level
 
         # Text splitter optimized for financial documents
         self.splitter = RecursiveCharacterTextSplitter(
@@ -36,7 +38,7 @@ class DocumentIngester:
             length_function=len,
         )
 
-        logger.info(f"Initialized ingester with chunk_size={chunk_size}, overlap={chunk_overlap}")
+        logger.info(f"Initialized ingester with chunk_size={chunk_size}, overlap={chunk_overlap}, page_level={page_level}")
 
     def ingest_from_directory(self, directory: str) -> List[Document]:
         """
@@ -103,28 +105,47 @@ class DocumentIngester:
             if not cleaned_text:
                 continue
 
-            # Split into chunks
-            chunks = self.splitter.split_text(cleaned_text)
-
-            # Create documents with metadata
-            for chunk_idx, chunk in enumerate(chunks):
+            if self.page_level:
+                # Create a single chunk per page
                 metadata = {
                     **doc_metadata,
                     "page": page_num,
-                    "chunk_idx": chunk_idx,
+                    "chunk_idx": 0,
                     "source": file_path,
                 }
 
-                # Extract item number from chunk if available
-                item_match = re.search(r"Item\s+(\d+[A-Z]*)", chunk[:200])
+                item_match = re.search(r"Item\s+(\d+[A-Z]*)", cleaned_text[:200])
                 if item_match:
                     metadata["item"] = f"Item {item_match.group(1)}"
 
                 doc = Document(
-                    page_content=chunk,
+                    page_content=cleaned_text,
                     metadata=metadata
                 )
                 chunked_documents.append(doc)
+            else:
+                # Split into chunks
+                chunks = self.splitter.split_text(cleaned_text)
+
+                # Create documents with metadata
+                for chunk_idx, chunk in enumerate(chunks):
+                    metadata = {
+                        **doc_metadata,
+                        "page": page_num,
+                        "chunk_idx": chunk_idx,
+                        "source": file_path,
+                    }
+
+                    # Extract item number from chunk if available
+                    item_match = re.search(r"Item\s+(\d+[A-Z]*)", chunk[:200])
+                    if item_match:
+                        metadata["item"] = f"Item {item_match.group(1)}"
+
+                    doc = Document(
+                        page_content=chunk,
+                        metadata=metadata
+                    )
+                    chunked_documents.append(doc)
 
         logger.info(f"Created {len(chunked_documents)} chunks from {Path(file_path).name}")
         return chunked_documents
@@ -242,4 +263,3 @@ if __name__ == "__main__":
         print(f"\nFirst document sample:")
         print(f"  Content: {documents[0].page_content[:200]}...")
         print(f"  Metadata: {documents[0].metadata}")
-
