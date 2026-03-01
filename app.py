@@ -189,4 +189,3 @@ with tab3:
     - Apple 10-K FY2024 (ended Sept 28, 2024)
     - Tesla 10-K FY2023 (ended Dec 31, 2023)
     """)
-
