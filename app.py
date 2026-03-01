@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 from rag_pipeline import RAGPipeline
+import re
+from collections import Counter
 
 # Page config
 st.set_page_config(
@@ -82,6 +84,16 @@ def get_ollama_status():
         return "timeout", ["Connection timed out"]
     except Exception as e:
         return "error", [str(e)]
+
+def generate_wordcloud_data(text):
+    """Generate simple word frequency data for visualization"""
+    # Simple tokenization and cleaning
+    words = re.findall(r'\b[a-zA-Z]{4,}\b', text.lower())
+    # Filter common stop words (very basic list)
+    stop_words = {'this', 'that', 'with', 'from', 'have', 'were', 'which', 'their', 'other', 'about', 'these', 'would', 'could', 'should', 'shall', 'will', 'been', 'when', 'where', 'what', 'your', 'there', 'here', 'they', 'them', 'does', 'made', 'make', 'also', 'into', 'than', 'then', 'just', 'over', 'only', 'very', 'even', 'most', 'some', 'such', 'after', 'before', 'under', 'between', 'while', 'since', 'until', 'during', 'through', 'within', 'without', 'along', 'across', 'against', 'among', 'around', 'behind', 'below', 'beneath', 'beside', 'beyond', 'inside', 'outside', 'toward', 'towards', 'upon', 'company', 'financial', 'statements', 'results', 'operations', 'fiscal', 'ended', 'september', 'december', 'report', 'annual', 'period', 'table', 'contents', 'item', 'page', 'note', 'notes', 'consolidated', 'millions', 'thousands', 'share', 'shares', 'stock', 'value', 'total', 'assets', 'liabilities', 'equity', 'income', 'loss', 'cash', 'flows', 'operating', 'investing', 'financing', 'activities', 'net', 'increase', 'decrease', 'change', 'changes', 'year', 'years', 'quarter', 'quarters', 'month', 'months', 'week', 'weeks', 'day', 'days', 'date', 'dates', 'time', 'times'}
+    
+    filtered_words = [w for w in words if w not in stop_words]
+    return Counter(filtered_words).most_common(20)
 
 
 # Main UI
@@ -187,15 +199,12 @@ if __name__ == "__main__":
         with col2:
             st.caption("Accuracy: 92%")
 
-    # Main content
+    # Determine operational mode
+    is_retrieval_only = False
     if not ollama_available and not use_api:
-        st.warning("⚠️ **Ollama is not running.**")
-        st.markdown("""
-        The system is running in **Retrieval-Only Mode**. 
-        
-        You can search for documents, and the system will show you the most relevant excerpts. 
-        However, it cannot generate a synthesized answer without the LLM.
-        """)
+        is_retrieval_only = True
+        st.warning("⚠️ **Ollama is not running.** System is in **Retrieval-Only Mode**.")
+        st.info("💡 You can still search documents. The system will retrieve relevant pages, but it cannot generate AI summaries without Ollama or an API key.")
         
         with st.expander("🛠️ How to enable AI Summaries (Install Ollama)"):
             st.markdown("""
@@ -224,7 +233,9 @@ if __name__ == "__main__":
 
             col1, col2 = st.columns(2)
             with col1:
-                submit = st.button("🚀 Get Answer", use_container_width=True)
+                # Change button label based on mode
+                btn_label = "🔍 Search Documents" if is_retrieval_only else "🚀 Get Answer"
+                submit = st.button(btn_label, use_container_width=True)
             with col2:
                 clear = st.button("🔄 Clear", use_container_width=True)
 
@@ -237,43 +248,51 @@ if __name__ == "__main__":
                         result = rag.answer_question(query, top_k=top_k, temperature=temperature)
                         
                         # Check if answer is the fallback message or if we are in retrieval only mode
-                        is_fallback = "LLM Not Available" in result["answer"] or "LLM not available" in result["answer"]
+                        is_fallback = is_retrieval_only or "LLM Not Available" in result["answer"] or "LLM not available" in result["answer"]
 
                         # Display answer
                         if is_fallback:
-                            st.subheader("🔍 Search Results")
-                            st.info("The LLM is unavailable. Displaying top retrieved document excerpts directly.")
-                            
-                            for i, source in enumerate(result["sources"], 1):
-                                with st.container():
-                                    st.markdown(f"#### {i}. {source.get('document', 'Unknown')}")
-                                    
-                                    # Metadata row
-                                    c1, c2, c3 = st.columns(3)
-                                    c1.caption(f"📄 Page: {source.get('page', 'N/A')}")
-                                    c2.caption(f"📌 Section: {source.get('item', 'N/A')}")
-                                    c3.caption(f"📂 File: {source.get('source_file', 'N/A')}")
-                                    
-                                    # Content
-                                    st.text_area(
-                                        label="Content",
-                                        value=source.get('content', ''),
-                                        height=150,
-                                        key=f"content_{i}",
-                                        disabled=True
-                                    )
-                                    st.divider()
+                            st.subheader("📄 Retrieved Context")
+                            st.caption("The LLM could not be reached to summarize these results. Here are the relevant excerpts from the documents:")
                         else:
                             st.success("✅ Answer Generated")
                             st.subheader("Answer")
                             st.write(result["answer"])
+
+                        # Display sources
+                        if result["sources"]:
+                            if not is_fallback:
+                                st.subheader("📚 Sources")
                             
-                            if result["sources"]:
-                                with st.expander("📚 View Source Documents"):
-                                    for i, source in enumerate(result["sources"], 1):
-                                        st.markdown(f"**{i}. {source.get('document', 'Unknown')}** (p. {source.get('page', 'N/A')})")
-                                        st.caption(source.get('content', 'N/A')[:300] + "...")
-                                        st.divider()
+                            for i, source in enumerate(result["sources"], 1):
+                                # If fallback, show cards/expanders open by default or just text
+                                with st.expander(f"📄 {source.get('document', 'Unknown')} (p. {source.get('page', 'N/A')})", expanded=is_fallback):
+                                    st.markdown(f"**File:** `{source.get('source_file', 'N/A')}`")
+                                    st.markdown(f"**Section:** {source.get('item', 'N/A')}")
+                                    st.markdown("---")
+                                    st.markdown(f"{source.get('content', 'N/A')}")
+                            
+                            # Document Insights Section (Word Cloud / Frequency)
+                            st.divider()
+                            st.subheader("📊 Document Insights")
+                            
+                            # Combine all retrieved text
+                            all_text = " ".join([s.get('content', '') for s in result["sources"]])
+                            word_freq = generate_wordcloud_data(all_text)
+                            
+                            if word_freq:
+                                st.write("Most frequent terms in retrieved documents:")
+                                # Create a simple bar chart using streamlit
+                                chart_data = {word: count for word, count in word_freq}
+                                st.bar_chart(chart_data)
+                                
+                                # Also show as tags
+                                st.write("Key Topics:")
+                                tags_html = " ".join([f"<span style='background-color: #f0f2f6; padding: 5px 10px; border-radius: 15px; margin: 5px; display: inline-block;'>{word} ({count})</span>" for word, count in word_freq[:10]])
+                                st.markdown(tags_html, unsafe_allow_html=True)
+
+                        else:
+                            st.warning("No relevant documents found.")
 
                         # Display JSON for easy copy
                         st.subheader("JSON Output")
