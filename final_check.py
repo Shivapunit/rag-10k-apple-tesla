@@ -36,7 +36,7 @@ def check_files():
         "Setup & Config": [
             "requirements.txt",
             ".gitignore",
-            ".env.example",
+            ".env",
             "setup.sh",
             "setup.bat",
             "verify_setup.py",

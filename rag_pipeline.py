@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 import json
 import os
+import requests
 
 # Vector store and embeddings
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -37,6 +38,68 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+
+class OllamaAPILLM:
+    """Ollama API-based LLM client with authentication"""
+
+    def __init__(self, api_key: Optional[str] = None, api_url: str = "https://api.ollama.com/v1/chat/completions"):
+        """
+        Initialize Ollama API client
+
+        Args:
+            api_key: API key (if None, tries to get from OLLAMA_API_KEY env var)
+            api_url: Ollama API endpoint
+        """
+        self.api_key = api_key or os.getenv("OLLAMA_API_KEY")
+        self.api_url = api_url
+        self.temperature = 0.3
+
+        if not self.api_key:
+            logger.warning("OLLAMA_API_KEY not set. API calls will fail.")
+
+    def invoke(self, prompt: str) -> str:
+        """
+        Call Ollama API with authentication
+
+        Args:
+            prompt: The prompt to send to LLM
+
+        Returns:
+            str: Generated response from LLM
+        """
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": "llama3:8b-instruct",
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": self.temperature
+            }
+
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+
+            return response.json()["choices"][0]["message"]["content"]
+
+        except requests.exceptions.Timeout:
+            logger.error("API request timed out")
+            return "Error: Request timed out"
+        except requests.exceptions.ConnectionError:
+            logger.error("Could not connect to Ollama API")
+            return "Error: Could not connect to API"
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"API error: {e}")
+            return f"Error: {e.response.status_code}"
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            return f"Error: {str(e)}"
+
 
 
 class RAGPipeline:
@@ -65,13 +128,16 @@ Answer:"""
         data_dir: str = "data",
         vector_store_dir: str = "vector_store",
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
-        llm_model: str = "mistral",  # Local Ollama model
+        llm_model: str = "mistral",
         top_k: int = 5,
         chunk_size: int = 500,
         chunk_overlap: int = 100,
         use_hybrid_retrieval: bool = True,
         bm25_weight: float = 0.3,
         vector_weight: float = 0.7,
+        use_api: bool = False,
+        ollama_api_key: Optional[str] = None,
+        ollama_api_url: str = "https://api.ollama.com/v1/chat/completions",
     ):
         """
         Initialize RAG pipeline
@@ -87,6 +153,9 @@ Answer:"""
             use_hybrid_retrieval: Use BM25 + Vector hybrid search
             bm25_weight: Weight for BM25 scores (0-1)
             vector_weight: Weight for vector scores (0-1)
+            use_api: Use Ollama API instead of local
+            ollama_api_key: API key for Ollama API (if None, uses OLLAMA_API_KEY env var)
+            ollama_api_url: Ollama API endpoint
         """
         self.data_dir = Path(data_dir)
         self.vector_store_dir = Path(vector_store_dir)
@@ -98,6 +167,9 @@ Answer:"""
         self.use_hybrid_retrieval = use_hybrid_retrieval and HYBRID_RETRIEVAL_AVAILABLE
         self.bm25_weight = bm25_weight
         self.vector_weight = vector_weight
+        self.use_api = use_api
+        self.ollama_api_key = ollama_api_key
+        self.ollama_api_url = ollama_api_url
 
         # Initialize components
         self.embeddings = None
@@ -118,17 +190,37 @@ Answer:"""
         logger.info(f"Loading embeddings model: {self.embedding_model_name}")
         self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model_name)
 
-        # Initialize LLM (Ollama - must be running locally)
+        # Initialize LLM (Ollama - local or API)
         logger.info(f"Initializing LLM: {self.llm_model_name}")
-        try:
-            self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
-            # Test LLM connection
-            _ = self.llm.invoke("Hi")
-            logger.info(f"LLM {self.llm_model_name} ready")
-        except Exception as e:
-            logger.error(f"LLM initialization error: {e}")
-            logger.info("Make sure Ollama is running locally with: ollama run mistral")
-            raise
+
+        if self.use_api:
+            # Use Ollama API with authentication
+            logger.info("Using Ollama API with authentication")
+            try:
+                self.llm = OllamaAPILLM(
+                    api_key=self.ollama_api_key,
+                    api_url=self.ollama_api_url
+                )
+                # Test API connection
+                test_response = self.llm.invoke("Hi")
+                if "Error" in test_response:
+                    raise Exception(f"API Error: {test_response}")
+                logger.info("Ollama API connected successfully")
+            except Exception as e:
+                logger.error(f"Ollama API initialization error: {e}")
+                raise
+        else:
+            # Use local Ollama (must be running locally)
+            logger.info("Using local Ollama instance")
+            try:
+                self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
+                # Test LLM connection
+                _ = self.llm.invoke("Hi")
+                logger.info(f"Local Ollama {self.llm_model_name} ready")
+            except Exception as e:
+                logger.error(f"Local Ollama initialization error: {e}")
+                logger.info("Make sure Ollama is running locally with: ollama run mistral")
+                raise
 
     def is_indexed(self) -> bool:
         """Check if vector store already exists"""

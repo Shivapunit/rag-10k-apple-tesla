@@ -1,10 +1,12 @@
 """
 Streamlit App for RAG-based 10-K Financial Analysis
 Interactive UI for querying Apple and Tesla financial documents
+Supports: Local Ollama OR Ollama API with authentication
 """
 
 import streamlit as st
 import json
+import os
 from pathlib import Path
 from rag_pipeline import RAGPipeline
 
@@ -12,7 +14,7 @@ from rag_pipeline import RAGPipeline
 st.set_page_config(
     page_title="10-K RAG Analysis",
     page_icon="📄",
-    layout="wide"
+    layout="wide",
 )
 
 st.title("📄 10-K Financial Document RAG System")
@@ -20,10 +22,13 @@ st.markdown("Query Apple 2024 and Tesla 2023 10-K filings using RAG + Open-Sourc
 
 # Initialize RAG pipeline with error handling
 @st.cache_resource
-def load_rag_pipeline():
+def load_rag_pipeline(use_api: bool = False, api_key: str = None):
     """Load RAG pipeline once per session"""
     try:
-        pipeline = RAGPipeline()
+        pipeline = RAGPipeline(
+            use_api=use_api,
+            ollama_api_key=api_key or os.getenv("OLLAMA_API_KEY"),
+        )
         if not pipeline.is_indexed():
             st.info("⏳ Building vector index on first run... This may take a few minutes.")
             if not pipeline.build_index():
@@ -32,8 +37,8 @@ def load_rag_pipeline():
         return pipeline
     except Exception as e:
         st.error(f"❌ Error initializing RAG pipeline: {str(e)}")
-        st.write("Make sure Ollama is running: `ollama run mistral`")
         return None
+
 
 # Check if Ollama is available
 def check_ollama():
@@ -47,13 +52,10 @@ def check_ollama():
             if response.status_code == 200:
                 return True
         except requests.exceptions.ConnectionError:
-            # Ollama server not running
             continue
         except requests.exceptions.Timeout:
-            # Server timeout
             continue
         except Exception:
-            # Other errors
             continue
 
     return False
@@ -66,9 +68,9 @@ def get_ollama_status():
         response = requests.get("http://localhost:11434/api/tags", timeout=1)
         if response.status_code == 200:
             data = response.json()
-            models = data.get('models', [])
+            models = data.get("models", [])
             if models:
-                model_names = [m.get('name', 'unknown') for m in models]
+                model_names = [m.get("name", "unknown") for m in models]
                 return "running", model_names
             return "running", []
         else:
@@ -80,52 +82,92 @@ def get_ollama_status():
     except Exception as e:
         return "error", [str(e)]
 
+
 # Main UI
 if __name__ == "__main__":
+    # Pre-check local Ollama availability
+    ollama_available = check_ollama()
+
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # Check environment
+        # Environment
         env_status = "🌐 Cloud" if "streamlit" in str(Path.cwd()) else "💻 Local"
         st.write(f"**Environment**: {env_status}")
 
-        # Ollama status with details
-        ollama_available = check_ollama()
-        status, details = get_ollama_status()
+        # LLM Mode Selection
+        st.subheader("🤖 LLM Configuration")
+        use_api = st.checkbox("Use Ollama API", value=False, help="Toggle between Local Ollama and Ollama API")
 
-        if ollama_available:
-            st.success("✅ Ollama is running")
-            if details:
-                st.write(f"**Models**: {', '.join(details)}")
+        api_key = None
+        api_url = "https://api.ollama.com/v1/chat/completions"
+
+        if use_api:
+            st.caption("🔑 Ollama API Mode")
+            # Prefer Streamlit secrets if available (for Cloud)
+            prefilled_key = None
+            try:
+                prefilled_key = st.secrets.get("OLLAMA_API_KEY") if hasattr(st, "secrets") else None
+            except Exception:
+                prefilled_key = None
+            if not prefilled_key:
+                prefilled_key = os.getenv("OLLAMA_API_KEY", "")
+
+            api_key = st.text_input(
+                "API Key",
+                type="password",
+                value=prefilled_key,
+                help="Paste your Ollama API key (will be hidden). In Streamlit Cloud, set this in Settings → Secrets.",
+            )
+            api_url = st.text_input(
+                "API URL",
+                value=api_url,
+                help="Ollama API endpoint",
+            )
+            st.success("✅ API Mode Enabled")
         else:
-            st.warning("⚠️ Ollama not detected")
-            if env_status == "🌐 Cloud":
-                st.info("ℹ️ Streamlit Cloud doesn't support Ollama. Use local or Colab.")
-            else:
-                st.error(f"Status: {status}")
+            st.caption("🖥️ Local Ollama Mode")
+            # Update local status
+            ollama_available = check_ollama()
+            status, details = get_ollama_status()
+            if ollama_available:
+                st.success("✅ Ollama is running")
                 if details:
-                    st.caption(f"Details: {', '.join(details)}")
+                    st.write(f"**Models**: {', '.join(details)}")
+            else:
+                st.warning("⚠️ Ollama not detected")
+                if env_status == "🌐 Cloud":
+                    st.info("ℹ️ Cloud detected. Switch to 'Use Ollama API' mode.")
+                else:
+                    st.error(f"Status: {status}")
+                    if details:
+                        st.caption(f"Details: {', '.join(details)}")
 
-        if ollama_available:
-            st.divider()
-            col1, col2 = st.columns(2)
-            with col1:
-                top_k = st.slider("Top-K documents", 3, 10, 5)
-            with col2:
-                temperature = st.slider("Temperature", 0.0, 1.0, 0.3)
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            top_k = st.slider("Top-K documents", 3, 10, 5)
+        with col2:
+            temperature = st.slider("Temperature", 0.0, 1.0, 0.3)
 
         st.divider()
         st.subheader("📊 System Info")
 
-        if ollama_available:
-            rag = load_rag_pipeline()
-            if rag:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Chunks Indexed", rag.get_chunk_count())
-                with col2:
-                    st.metric("Retrieval", "Hybrid")
+        # Load RAG pipeline with appropriate mode
+        if use_api or not ollama_available:
+            rag = load_rag_pipeline(use_api=use_api or not ollama_available, api_key=api_key if use_api else None)
+        else:
+            rag = load_rag_pipeline(use_api=False)
+
+        if rag:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Chunks", rag.get_chunk_count())
+            with col2:
+                st.metric("Retrieval", "Hybrid")
+            with col3:
+                st.metric("Accuracy", "92%")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -134,52 +176,52 @@ if __name__ == "__main__":
             st.caption("Accuracy: 92%")
 
     # Main content
-    if not ollama_available:
-        st.error("❌ Ollama LLM Server Not Found")
+    if not ollama_available and not use_api:
+        st.warning("⚠️ Ollama Not Running - Switch to API Mode")
 
         status, details = get_ollama_status()
 
         with st.expander("🔧 Setup Ollama", expanded=True):
             st.markdown("""
             ### 1️⃣ Install Ollama
-            
+
             Download from: **https://ollama.ai**
-            
+
             #### For Mac:
               • Download .dmg file
               • Open and follow installer
               • Ollama starts automatically
-            
+
             #### For Linux:
               • `curl https://ollama.ai/install.sh | sh`
               • `systemctl enable ollama`
-            
+
             #### For Windows:
               • Download .exe file
               • Run installer
               • Restart terminal
-            
+
             ### 2️⃣ Start Ollama Service
-            
+
             Open a terminal and run:
             ```bash
             ollama run mistral
             ```
-            
+
             This will:
               • Download Mistral-7B model (~4GB)
               • Start the Ollama server
               • Keep it running in the background
-            
+
             ### 3️⃣ Verify Connection
-            
+
             Once running, you should see:
               • Server listening at http://localhost:11434
               • Model: mistral loaded
               • Ready for inference
-            
+
             ### 🌐 For Cloud Deployment
-            
+
             Since Ollama can't run on Streamlit Cloud:
               • Use **Google Colab**: notebooks/rag_colab.ipynb (click "Open in Colab")
               • Or use **CLI**: `python test_runner.py`
@@ -190,33 +232,33 @@ if __name__ == "__main__":
             st.markdown(f"""
             **Current Status**: {status}
             **Details**: {', '.join(details) if details else 'N/A'}
-            
+
             #### Common Issues:
-            
+
             1. **"Server not accessible"**
                • Make sure Ollama is running: `ollama run mistral`
                • Check port 11434 is not blocked
                • Try: `curl http://localhost:11434/api/tags`
-            
+
             2. **"Connection timeout"**
                • Ollama might be slow
                • Wait 10 seconds and refresh page
                • Check system resources
-            
+
             3. **"Model not loaded"**
                • Download model: `ollama run mistral`
                • Wait for download to complete
                • Try again after 5 minutes
-            
+
             4. **"Port already in use"**
                • Kill process: `lsof -i :11434` (Mac/Linux)
                • Or change Ollama port in config
-            
+
             #### Advanced: Manual Port Check
             ```bash
             curl -v http://localhost:11434/api/tags
             ```
-            
+
             Should return JSON with available models.
             """)
 
@@ -229,8 +271,7 @@ if __name__ == "__main__":
         • CLI testing (python test_runner.py)
         """)
     else:
-        rag = load_rag_pipeline()
-
+        # 'rag' was initialized above in the sidebar block; use it here
         if rag is None:
             st.error("Failed to initialize RAG pipeline. Please check the logs above.")
         else:
@@ -242,7 +283,7 @@ if __name__ == "__main__":
                 query = st.text_area(
                     "Enter your question about Apple or Tesla 10-K filings:",
                     placeholder="e.g., What was Apple's total revenue for FY 2024?",
-                    height=100
+                    height=100,
                 )
 
                 col1, col2 = st.columns(2)
@@ -345,7 +386,7 @@ if __name__ == "__main__":
                             label="📥 Download Results (JSON)",
                             data=json.dumps(results, indent=2),
                             file_name="test_results.json",
-                            mime="application/json"
+                            mime="application/json",
                         )
 
             with tab3:
@@ -357,28 +398,27 @@ if __name__ == "__main__":
                 - **Retrieval**: Fast semantic search over document chunks
                 - **Augmentation**: Injecting retrieved context into LLM prompts
                 - **Generation**: Using LLM to synthesize answers from context
-                
+
                 ### Architecture
                 1. **Document Ingestion**: PDFs parsed and chunked
                 2. **Embeddings**: Chunks embedded using sentence-transformers
                 3. **Vector Store**: FAISS for fast similarity search
                 4. **Retrieval**: Top-5 chunks retrieved per query
                 5. **LLM**: Mistral generates answer using retrieved context
-                
+
                 ### Key Features
                 ✅ No proprietary API required (open-source LLM)
                 ✅ Source citations with page numbers
                 ✅ Out-of-scope question handling
                 ✅ Metadata preservation (document, section, page)
                 ✅ Efficient chunking with semantic overlap
-                
+
                 ### Sources
                 - Apple 10-K FY2024 (ended Sept 28, 2024)
                 - Tesla 10-K FY2023 (ended Dec 31, 2023)
-                
+
                 ### Deployment Options
                 - **Local**: `streamlit run app.py` (requires Ollama)
                 - **CLI**: `python test_runner.py`
                 - **Google Colab**: `notebooks/rag_colab.ipynb`
                 """)
-
