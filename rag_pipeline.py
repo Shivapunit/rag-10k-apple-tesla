@@ -66,20 +66,20 @@ logging.basicConfig(level=logging.INFO)
 class OllamaAPILLM:
     """Ollama API-based LLM client with authentication"""
 
-    def __init__(self, api_key: Optional[str] = None, api_url: str = "https://api.ollama.com/v1/chat/completions"):
+    def __init__(self, api_key: Optional[str] = None, api_url: Optional[str] = None):
         """
         Initialize Ollama API client
 
         Args:
             api_key: API key (if None, tries to get from OLLAMA_API_KEY env var)
-            api_url: Ollama API endpoint
+            api_url: Ollama API endpoint (if None, uses environment variable or default)
         """
         self.api_key = api_key or os.getenv("OLLAMA_API_KEY")
-        self.api_url = api_url
+        self.api_url = api_url or os.getenv("OLLAMA_API_URL") or "http://localhost:11434/api/chat"
         self.temperature = 0.3
 
-        if not self.api_key:
-            logger.warning("OLLAMA_API_KEY not set. API calls will fail.")
+        if not self.api_key and not self.api_url.startswith("http://localhost"):
+            logger.warning("OLLAMA_API_KEY not set. Remote API calls will fail. Set OLLAMA_API_KEY environment variable or pass api_key parameter.")
 
     def invoke(self, prompt: str) -> str:
         """
@@ -93,32 +93,50 @@ class OllamaAPILLM:
         """
         try:
             headers = {
-                "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json"
             }
 
+            # Add authorization only if API key is set and not localhost
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+
             payload = {
                 "model": "llama3:8b-instruct",
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
+                "prompt": prompt,
+                "stream": False,
                 "temperature": self.temperature
             }
 
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            logger.info(f"Calling Ollama API at: {self.api_url}")
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
 
-            return response.json()["choices"][0]["message"]["content"]
+            # Handle different response formats
+            result = response.json()
+            if "response" in result:
+                return result["response"]
+            elif "choices" in result and len(result["choices"]) > 0:
+                return result["choices"][0].get("message", {}).get("content", "")
+            else:
+                logger.warning(f"Unexpected response format: {result}")
+                return str(result)
 
         except requests.exceptions.Timeout:
-            logger.error("API request timed out")
-            return "Error: Request timed out"
-        except requests.exceptions.ConnectionError:
-            logger.error("Could not connect to Ollama API")
-            return "Error: Could not connect to API"
+            logger.error("API request timed out (60s)")
+            return "Error: Request timed out. Server may be slow or overloaded."
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Could not connect to Ollama API at {self.api_url}: {e}")
+            return f"Error: Could not connect to {self.api_url}. Make sure the Ollama server is running."
         except requests.exceptions.HTTPError as e:
-            logger.error(f"API error: {e}")
-            return f"Error: {e.response.status_code}"
+            if e.response.status_code == 401:
+                logger.error(f"Unauthorized (401): API key may be invalid or missing. URL: {self.api_url}")
+                return "Error: 401 Unauthorized. Check your OLLAMA_API_KEY."
+            elif e.response.status_code == 404:
+                logger.error(f"Not Found (404): Endpoint {self.api_url} does not exist.")
+                return f"Error: 404 Not Found. Check your API URL: {self.api_url}"
+            else:
+                logger.error(f"API error {e.response.status_code}: {e}")
+                return f"Error: HTTP {e.response.status_code}"
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             return f"Error: {str(e)}"

@@ -10,10 +10,11 @@ faiss-cpu>=1.13.0,<2.0.0
 # Hybrid retrieval (BM25 + Vector Search)
 rank-bm25==0.2.2
 
-# Embeddings (open-source)
-sentence-transformers==2.2.2
+# Embeddings (open-source) - OPTIONAL: install locally for better accuracy
+# sentence-transformers==2.2.2  # Optional: uncomment to use HuggingFace embeddings (requires torch)
+# If not installed, the system will fall back to TF-IDF embeddings via scikit-learn
 
-# scikit-learn fallback for environments where sentence-transformers cannot be installed
+# TF-IDF fallback embeddings (required)
 scikit-learn>=1.2.2
 
 # LLM - Ollama for local/open-source models (mistral, llama, etc.)

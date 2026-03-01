@@ -118,14 +118,25 @@ if __name__ == "__main__":
                 "API Key",
                 type="password",
                 value=prefilled_key,
-                help="Paste your Ollama API key (will be hidden). In Streamlit Cloud, set this in Settings → Secrets.",
+                help="Paste your Ollama API key (if required). In Streamlit Cloud, set this in Settings → Secrets.",
             )
+
+            # Get default API URL from environment or use local default
+            default_api_url = os.getenv("OLLAMA_API_URL") or "http://localhost:11434/api/chat"
             api_url = st.text_input(
                 "API URL",
-                value=api_url,
-                help="Ollama API endpoint",
+                value=default_api_url,
+                help="Ollama API endpoint. Default: http://localhost:11434/api/chat (local). For remote: https://your-ollama-server/api/chat",
             )
-            st.success("✅ API Mode Enabled")
+
+            st.info("""
+            **API Configuration Help:**
+            - **Local Ollama**: `http://localhost:11434/api/chat` (no API key needed)
+            - **Remote Ollama**: `https://your-server.com/api/chat` (requires API key in OLLAMA_API_KEY)
+            - **Set env vars** to avoid re-entering:
+              - `OLLAMA_API_KEY=your_key_here`
+              - `OLLAMA_API_URL=http://localhost:11434/api/chat`
+            """)
         else:
             st.caption("🖥️ Local Ollama Mode")
             # Update local status
