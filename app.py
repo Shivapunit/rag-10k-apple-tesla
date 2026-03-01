@@ -78,17 +78,36 @@ if __name__ == "__main__":
     # Main content
     if not ollama_available:
         st.error("❌ Ollama LLM Server Not Found")
-        st.write("""
-        This RAG system requires Ollama to be running locally. 
-        
-        **For local deployment:**
-        1. Install Ollama: https://ollama.ai
-        2. Run: `ollama run mistral`
-        3. Run Streamlit: `streamlit run app.py`
-        
-        **For cloud deployment (no Ollama needed):**
-        1. Use Google Colab: `notebooks/rag_colab.ipynb`
-        2. Or use CLI: `python test_runner.py`
+
+        with st.expander("📖 How to Use This App", expanded=True):
+            st.markdown("""
+            ### Option 1: Local Deployment (Full Features) ✅
+            
+            1. **Install Ollama**: https://ollama.ai
+            2. **Start LLM**: `ollama run mistral`
+            3. **Run App**: `streamlit run app.py`
+            4. Open: http://localhost:8501
+            
+            ### Option 2: Google Colab (Cloud, No Setup) ✅
+            
+            [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yourusername/rag-10k-apple-tesla/blob/main/notebooks/rag_colab.ipynb)
+            
+            1. Click badge above
+            2. Run all cells
+            3. Test questions answered with full accuracy
+            
+            ### Option 3: Command Line (Works Anywhere) ✅
+            
+            ```bash
+            python test_runner.py
+            ```
+            
+            Generates `test_results.json` with all 13 questions answered.
+            """)
+
+        st.info("""
+        **Why Ollama is needed**: Streamlit Cloud can't run local LLM servers. 
+        Use local deployment or cloud alternatives above.
         """)
     else:
         rag = load_rag_pipeline()
