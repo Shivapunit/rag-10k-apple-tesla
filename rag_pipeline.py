@@ -49,6 +49,7 @@ except Exception:
 
 # Document processing
 from ingest import DocumentIngester
+from pageindex_retriever import PageIndexRetriever
 
 # Hybrid retrieval
 try:
@@ -214,6 +215,7 @@ Answer:"""
         ollama_api_key: Optional[str] = None,
         ollama_api_url: str = None,
         page_level: bool = False,
+        retrieval_mode: str = "hybrid",  # options: 'pageindex', 'vector', 'hybrid'
     ):
         """
         Initialize RAG pipeline
@@ -247,6 +249,8 @@ Answer:"""
         self.ollama_api_key = ollama_api_key
         self.ollama_api_url = ollama_api_url or os.getenv("OLLAMA_API_URL") or "http://localhost:11434/api/chat"
         self.page_level = page_level
+        self.retrieval_mode = retrieval_mode
+        self.page_retriever = None
 
         # Initialize components
         self.embeddings = None
@@ -385,6 +389,14 @@ Answer:"""
                     logger.info("Falling back to vector search only")
                     self.use_hybrid_retrieval = False
 
+            # Initialize page_index retriever on page-level documents
+            try:
+                logger.info("Initializing page-level retriever (PageIndex/BM25)")
+                self.page_retriever = PageIndexRetriever(self.ingested_documents)
+            except Exception as e:
+                logger.warning(f"Could not initialize page retriever: {e}")
+                self.page_retriever = None
+
             logger.info("Index built successfully")
             return True
 
@@ -424,6 +436,15 @@ Answer:"""
                 search_type="similarity",
                 search_kwargs={"k": self.top_k}
             )
+
+            # Initialize page retriever if in pageindex mode
+            if self.retrieval_mode == 'pageindex':
+                try:
+                    logger.info("Initializing page-level retriever (PageIndex/BM25)")
+                    self.page_retriever = PageIndexRetriever(self.ingested_documents)
+                except Exception as e:
+                    logger.warning(f"Could not initialize page retriever: {e}")
+                    self.page_retriever = None
 
             logger.info("Vector store loaded successfully")
             return True
@@ -483,11 +504,34 @@ Answer:"""
             if self.llm:
                 self.llm.temperature = temperature
 
-            # Retrieve relevant chunks
+            # Retrieve relevant chunks depending on retrieval_mode
             logger.info(f"Retrieving documents for query: {query[:100]}")
             k = top_k if top_k else self.top_k
 
-            retrieved_docs = self.retriever.get_relevant_documents(query)[:k]
+            if self.retrieval_mode == 'pageindex':
+                if not self.page_retriever:
+                    return {"answer": "Error: PageIndex retriever not available.", "sources": []}
+                page_hits = self.page_retriever.retrieve(query, k=k)
+                retrieved_docs = [doc for doc, score in page_hits]
+            elif self.retrieval_mode == 'vector':
+                retrieved_docs = self.retriever.get_relevant_documents(query)[:k]
+            else:  # hybrid
+                # Combine pageindex and vector results; simple merge and dedupe
+                results = []
+                if self.page_retriever:
+                    page_hits = self.page_retriever.retrieve(query, k=k)
+                    results.extend([doc for doc, score in page_hits])
+                vector_hits = self.retriever.get_relevant_documents(query)[:k]
+                results.extend(vector_hits)
+                # dedupe preserving order
+                seen = set()
+                deduped = []
+                for d in results:
+                    doc_id = (d.metadata.get('source'), d.metadata.get('page'), d.metadata.get('chunk_idx', 0))
+                    if doc_id not in seen:
+                        seen.add(doc_id)
+                        deduped.append(d)
+                retrieved_docs = deduped[:k]
 
             if not retrieved_docs:
                 return {
