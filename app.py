@@ -22,12 +22,13 @@ st.markdown("Query Apple 2024 and Tesla 2023 10-K filings using RAG + Open-Sourc
 
 # Initialize RAG pipeline with error handling
 @st.cache_resource
-def load_rag_pipeline(use_api: bool = False, api_key: str = None):
+def load_rag_pipeline(use_api: bool = False, api_key: str = None, api_url: str = None):
     """Load RAG pipeline once per session"""
     try:
         pipeline = RAGPipeline(
             use_api=use_api,
             ollama_api_key=api_key or os.getenv("OLLAMA_API_KEY"),
+            ollama_api_url=api_url or os.getenv("OLLAMA_API_URL") or "http://localhost:11434/api/chat",
         )
         if not pipeline.is_indexed():
             st.info("⏳ Building vector index on first run... This may take a few minutes.")
@@ -107,35 +108,42 @@ if __name__ == "__main__":
             st.caption("🔑 Ollama API Mode")
             # Prefer Streamlit secrets if available (for Cloud)
             prefilled_key = None
+            prefilled_url = None
             try:
-                prefilled_key = st.secrets.get("OLLAMA_API_KEY") if hasattr(st, "secrets") else None
+                if hasattr(st, "secrets"):
+                    prefilled_key = st.secrets.get("OLLAMA_API_KEY")
+                    prefilled_url = st.secrets.get("OLLAMA_API_URL")
             except Exception:
                 prefilled_key = None
+                prefilled_url = None
+
             if not prefilled_key:
                 prefilled_key = os.getenv("OLLAMA_API_KEY", "")
+            if not prefilled_url:
+                prefilled_url = os.getenv("OLLAMA_API_URL", "http://localhost:11434/api/chat")
 
             api_key = st.text_input(
                 "API Key",
                 type="password",
                 value=prefilled_key,
-                help="Paste your Ollama API key (if required). In Streamlit Cloud, set this in Settings → Secrets.",
+                help="Paste your Ollama API key (if required). In Streamlit Cloud, set this in Settings → Secrets → OLLAMA_API_KEY.",
             )
 
-            # Get default API URL from environment or use local default
-            default_api_url = os.getenv("OLLAMA_API_URL") or "http://localhost:11434/api/chat"
+            # Get API URL from secrets/env or show default
             api_url = st.text_input(
                 "API URL",
-                value=default_api_url,
-                help="Ollama API endpoint. Default: http://localhost:11434/api/chat (local). For remote: https://your-ollama-server/api/chat",
+                value=prefilled_url,
+                help="Ollama API endpoint. Default: http://localhost:11434/api/chat (local). For remote: https://your-ollama-server/api/chat. Set in Secrets as OLLAMA_API_URL.",
             )
 
             st.info("""
             **API Configuration Help:**
             - **Local Ollama**: `http://localhost:11434/api/chat` (no API key needed)
             - **Remote Ollama**: `https://your-server.com/api/chat` (requires API key in OLLAMA_API_KEY)
-            - **Set env vars** to avoid re-entering:
-              - `OLLAMA_API_KEY=your_key_here`
-              - `OLLAMA_API_URL=http://localhost:11434/api/chat`
+            - **Streamlit Cloud Secrets** (recommended):
+              - Go to App settings → Secrets
+              - Add: `OLLAMA_API_KEY = your_key`
+              - Add: `OLLAMA_API_URL = your_url` (optional, uses default if not set)
             """)
         else:
             st.caption("🖥️ Local Ollama Mode")
@@ -165,9 +173,13 @@ if __name__ == "__main__":
         st.divider()
         st.subheader("📊 System Info")
 
-        # Load RAG pipeline with appropriate mode
+        # Load RAG pipeline with appropriate mode and API URL
         if use_api or not ollama_available:
-            rag = load_rag_pipeline(use_api=use_api or not ollama_available, api_key=api_key if use_api else None)
+            rag = load_rag_pipeline(
+                use_api=use_api or not ollama_available,
+                api_key=api_key if use_api else None,
+                api_url=api_url if use_api else None
+            )
         else:
             rag = load_rag_pipeline(use_api=False)
 

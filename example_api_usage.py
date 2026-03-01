@@ -44,7 +44,7 @@ api_key = "your_api_key_here"  # Replace with your actual key
 rag_api = RAGPipeline(
     use_api=True,  # Use Ollama API
     ollama_api_key=api_key,
-    ollama_api_url="https://api.ollama.com/v1/chat/completions"
+    ollama_api_url="http://localhost:11434/api/chat"  # Correct endpoint
 )
 
 # Method 2: Use environment variable (recommended for security)
