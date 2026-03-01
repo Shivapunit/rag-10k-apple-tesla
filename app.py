@@ -288,10 +288,8 @@ if __name__ == "__main__":
                                 st.subheader("📚 Sources")
                             
                             for i, source in enumerate(result["sources"], 1):
-                                score_display = f" (Score: {source.get('score', 0.0):.4f})" if source.get('score') is not None else ""
-                                
                                 # If fallback, show cards/expanders open by default or just text
-                                with st.expander(f"📄 {source.get('document', 'Unknown')} (p. {source.get('page', 'N/A')}){score_display}", expanded=is_fallback):
+                                with st.expander(f"📄 {source.get('document', 'Unknown')} (p. {source.get('page', 'N/A')})", expanded=is_fallback):
                                     st.markdown(f"**File:** `{source.get('source_file', 'N/A')}`")
                                     st.markdown(f"**Section:** {source.get('item', 'N/A')}")
                                     st.markdown("---")
