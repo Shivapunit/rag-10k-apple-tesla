@@ -13,6 +13,9 @@ rank-bm25==0.2.2
 # Embeddings (open-source)
 sentence-transformers==2.2.2
 
+# scikit-learn fallback for environments where sentence-transformers cannot be installed
+scikit-learn>=1.2.2
+
 # LLM - Ollama for local/open-source models (mistral, llama, etc.)
 # Note: Ollama must be installed separately from https://ollama.ai
 # Run: ollama run mistral
@@ -27,5 +30,4 @@ requests>=2.31.0
 tqdm>=4.66.1
 numpy>=1.26.0
 pandas>=2.1.3
-
 

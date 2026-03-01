@@ -15,7 +15,15 @@ import os
 import requests
 
 # Vector store and embeddings
-from langchain_community.embeddings import HuggingFaceEmbeddings
+try:
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    EMBEDDINGS_AVAILABLE = True
+except Exception:
+    HuggingFaceEmbeddings = None
+    EMBEDDINGS_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("HuggingFaceEmbeddings not available. Will use TF-IDF fallback for embeddings.")
+
 from langchain_community.vectorstores import FAISS
 from langchain.schema import Document
 
@@ -100,6 +108,40 @@ class OllamaAPILLM:
             logger.error(f"Unexpected error: {e}")
             return f"Error: {str(e)}"
 
+
+
+class FallbackEmbeddings:
+    """Simple TF-IDF based embeddings wrapper for environments without sentence-transformers."""
+    def __init__(self):
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+        except Exception as e:
+            logger.error("scikit-learn not available. Install 'scikit-learn' or 'sentence-transformers'.")
+            raise
+        self.vectorizer = TfidfVectorizer(max_features=2048)
+        self._fit = False
+        self._corpus = []
+        self._embeddings = None
+
+    def fit(self, documents: List[str]):
+        # Fit the TF-IDF vectorizer on the provided documents
+        self._corpus = documents
+        self._embeddings = self.vectorizer.fit_transform(documents)
+        self._fit = True
+
+    def embed_documents(self, documents: List[str]) -> List[List[float]]:
+        if not self._fit:
+            # Fit on input documents if not pre-fitted
+            self.fit(documents)
+        emb = self.vectorizer.transform(documents)
+        return emb.toarray().tolist()
+
+    def embed_query(self, query: str) -> List[float]:
+        if not self._fit:
+            # Fit on small corpus to avoid failure
+            self.fit([query])
+        emb = self.vectorizer.transform([query])
+        return emb.toarray()[0].tolist()
 
 
 class RAGPipeline:
@@ -188,7 +230,17 @@ Answer:"""
 
         # Initialize embeddings
         logger.info(f"Loading embeddings model: {self.embedding_model_name}")
-        self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model_name)
+        try:
+            if EMBEDDINGS_AVAILABLE:
+                self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model_name)
+                logger.info("Loaded HuggingFaceEmbeddings successfully")
+            else:
+                # Use TF-IDF fallback
+                self.embeddings = FallbackEmbeddings()
+                logger.info("Using TF-IDF fallback embeddings (scikit-learn)")
+        except Exception as e:
+            logger.error(f"Embeddings initialization error: {e}")
+            raise
 
         # Initialize LLM (Ollama - local or API)
         logger.info(f"Initializing LLM: {self.llm_model_name}")
