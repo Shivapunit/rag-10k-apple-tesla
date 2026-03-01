@@ -98,7 +98,7 @@ class HybridRetriever:
             for s in scores
         ]
 
-    def retrieve(self, query: str) -> List[Document]:
+    def retrieve(self, query: str) -> List[Tuple[Document, float]]:
         """
         Retrieve documents using hybrid approach
 
@@ -106,7 +106,7 @@ class HybridRetriever:
             query (str): Search query
 
         Returns:
-            List[Document]: Top-k merged and re-ranked documents
+            List[Tuple[Document, float]]: Top-k merged and re-ranked documents with scores
         """
         try:
             logger.info(f"Hybrid retrieval for query: {query[:50]}...")
@@ -192,7 +192,7 @@ class HybridRetriever:
         self,
         bm25_results: List[Tuple[Document, float]],
         vector_results: List[Tuple[Document, float]]
-    ) -> List[Document]:
+    ) -> List[Tuple[Document, float]]:
         """
         Merge BM25 and vector results, re-rank by combined score
 
@@ -201,7 +201,7 @@ class HybridRetriever:
             vector_results: Results from vector search
 
         Returns:
-            Top-k merged and re-ranked documents
+            Top-k merged and re-ranked documents with combined scores
         """
         # Create document to score mapping
         doc_scores: Dict[str, Tuple[Document, float, float]] = {}
@@ -246,12 +246,11 @@ class HybridRetriever:
                 f"- {doc.metadata.get('document', 'Unknown')[:30]}..."
             )
 
-        # Return top-k documents
-        return [doc for doc, _, _, _ in scored_docs[:self.top_k]]
+        # Return top-k documents with scores
+        return [(doc, combined) for doc, combined, _, _ in scored_docs[:self.top_k]]
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print("Hybrid Retriever module loaded")
     print("Use with RAGPipeline for hybrid search capabilities")
-
