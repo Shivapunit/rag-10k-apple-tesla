@@ -108,7 +108,6 @@ class PageIndexRetriever:
 
         query_tokens = self._tokenize(query)
         scores = self._bm25.get_scores(query_tokens)
-        import numpy as np
         top_indices = np.argsort(scores)[::-1][:k]
         for idx in top_indices:
             if scores[idx] <= 0:

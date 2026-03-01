@@ -335,6 +335,7 @@ if __name__ == "__main__":
                                     with st.expander(f"Source {i}: {source.get('document', 'Unknown')}"):
                                         st.write(f"**Item**: {source.get('item', 'N/A')}")
                                         st.write(f"**Page**: {source.get('page', 'N/A')}")
+                                        st.write(f"**File**: {source.get('source_file', 'N/A')}")
                                         st.write(f"**Content**:\n{source.get('content', 'N/A')}")
 
                             # Display JSON for easy copy

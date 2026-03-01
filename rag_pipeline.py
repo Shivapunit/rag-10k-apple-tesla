@@ -43,10 +43,6 @@ except Exception:
     logger = logging.getLogger(__name__)
     logger.warning("langchain_community.llms.Ollama not available. Local Ollama mode will be disabled.")
 
-# Avoid requiring langchain PromptTemplate; we'll format prompts directly
-# from langchain.prompts import PromptTemplate
-# from langchain.chains import RetrievalQA
-
 # Document processing
 from ingest import DocumentIngester
 from pageindex_retriever import PageIndexRetriever
@@ -219,21 +215,6 @@ Answer:"""
     ):
         """
         Initialize RAG pipeline
-
-        Args:
-            data_dir: Directory containing PDF files
-            vector_store_dir: Directory for FAISS vector store
-            embedding_model: HuggingFace embedding model name
-            llm_model: Local LLM model (Ollama)
-            top_k: Number of chunks to retrieve
-            chunk_size: Size of text chunks
-            chunk_overlap: Overlap between chunks
-            use_hybrid_retrieval: Use BM25 + Vector hybrid search
-            bm25_weight: Weight for BM25 scores (0-1)
-            vector_weight: Weight for vector scores (0-1)
-            use_api: Use Ollama API instead of local
-            ollama_api_key: API key for Ollama API (if None, uses OLLAMA_API_KEY env var)
-            ollama_api_url: Ollama API endpoint
         """
         self.data_dir = Path(data_dir)
         self.vector_store_dir = Path(vector_store_dir)
@@ -290,30 +271,36 @@ Answer:"""
         logger.info(f"Initializing LLM: {self.llm_model_name}")
 
         self.llm = None
-        if self.use_api:
-            try:
-                self.llm = OllamaAPILLM(api_key=self.ollama_api_key, api_url=self.ollama_api_url)
-                test_response = self.llm.invoke("Hi")
-                if isinstance(test_response, str) and test_response.lower().startswith("error"):
-                    logger.warning(f"Ollama API test response indicates error: {test_response}")
-                    self.llm = None
-                else:
-                    logger.info("Ollama API connected successfully")
-            except Exception as e:
-                logger.error(f"Ollama API initialization error (non-fatal): {e}")
-                self.llm = None
-        else:
-            # Local Ollama if available
-            if Ollama is not None:
+        try:
+            if self.use_api:
                 try:
-                    self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
-                    _ = self.llm.invoke("Hi")
-                    logger.info(f"Local Ollama {self.llm_model_name} ready")
+                    self.llm = OllamaAPILLM(api_key=self.ollama_api_key, api_url=self.ollama_api_url)
+                    test_response = self.llm.invoke("Hi")
+                    if isinstance(test_response, str) and test_response.lower().startswith("error"):
+                        logger.warning(f"Ollama API test response indicates error: {test_response}")
+                        # We set LLM to None if it's not working, to avoid crashing later
+                        self.llm = None
+                    else:
+                        logger.info("Ollama API connected successfully")
                 except Exception as e:
-                    logger.error(f"Local Ollama initialization error (non-fatal): {e}")
+                    logger.error(f"Ollama API initialization error (non-fatal): {e}")
                     self.llm = None
             else:
-                logger.info("Local Ollama client not available; continuing without an LLM")
+                # Local Ollama if available
+                if Ollama is not None:
+                    try:
+                        self.llm = Ollama(model=self.llm_model_name, temperature=0.3)
+                        # Test connection
+                        self.llm.invoke("Hi")
+                        logger.info(f"Local Ollama {self.llm_model_name} ready")
+                    except Exception as e:
+                        logger.error(f"Local Ollama initialization error (non-fatal): {e}")
+                        self.llm = None
+                else:
+                    logger.info("Local Ollama client not available; continuing without an LLM")
+        except Exception as e:
+            logger.error(f"Critical error during LLM initialization (suppressed): {e}")
+            self.llm = None
 
     def is_indexed(self) -> bool:
         """Check if vector store already exists"""
@@ -542,17 +529,28 @@ Answer:"""
             # Build context from retrieved documents
             context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-            # Format the prompt directly (no dependency on langchain PromptTemplate)
-            formatted_prompt = self.FINANCIAL_QA_PROMPT.format(context=context, question=query)
-            logger.info("Generating answer with LLM...")
-            answer = self.llm.invoke(formatted_prompt) if self.llm else "LLM not available"
+            # Generate answer
+            answer = "LLM not available"
+            if self.llm:
+                try:
+                    # Format the prompt directly (no dependency on langchain PromptTemplate)
+                    formatted_prompt = self.FINANCIAL_QA_PROMPT.format(context=context, question=query)
+                    logger.info("Generating answer with LLM...")
+                    answer = self.llm.invoke(formatted_prompt)
+                except Exception as e:
+                    logger.error(f"LLM generation error: {e}")
+                    answer = f"Error generating answer: {str(e)}"
 
             # Extract sources
             sources = []
             if return_sources:
                 for doc in retrieved_docs:
+                    source_path = doc.metadata.get("source", "")
+                    source_file = Path(source_path).name if source_path else "Unknown"
+                    
                     sources.append({
                         "document": doc.metadata.get("document", "Unknown"),
+                        "source_file": source_file,
                         "item": doc.metadata.get("item", "Unknown"),
                         "page": str(doc.metadata.get("page", "N/A")),
                         "content": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
