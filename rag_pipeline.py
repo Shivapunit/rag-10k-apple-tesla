@@ -24,13 +24,28 @@ except Exception:
     logger = logging.getLogger(__name__)
     logger.warning("HuggingFaceEmbeddings not available. Will use TF-IDF fallback for embeddings.")
 
-from langchain_community.vectorstores import FAISS
+try:
+    from langchain_community.vectorstores import FAISS
+    VECTORSTORE_AVAILABLE = True
+except Exception:
+    FAISS = None
+    VECTORSTORE_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("FAISS (langchain_community.vectorstores) not available. Using simple in-memory fallback vector store.")
+
 from langchain.schema import Document
 
-# LLM imports
-from langchain_community.llms import Ollama
-from langchain.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
+# LLM imports - guard optional dependencies
+try:
+    from langchain_community.llms import Ollama
+except Exception:
+    Ollama = None
+    logger = logging.getLogger(__name__)
+    logger.warning("langchain_community.llms.Ollama not available. Local Ollama mode will be disabled.")
+
+# Avoid requiring langchain PromptTemplate; we'll format prompts directly
+# from langchain.prompts import PromptTemplate
+# from langchain.chains import RetrievalQA
 
 # Document processing
 from ingest import DocumentIngester
@@ -232,8 +247,19 @@ Answer:"""
         logger.info(f"Loading embeddings model: {self.embedding_model_name}")
         try:
             if EMBEDDINGS_AVAILABLE:
-                self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model_name)
-                logger.info("Loaded HuggingFaceEmbeddings successfully")
+                try:
+                    # Try to instantiate the HuggingFace embeddings; this may fail if
+                    # sentence-transformers or torch are not installed in the environment.
+                    self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model_name)
+                    logger.info("Loaded HuggingFaceEmbeddings successfully")
+                except Exception as e:
+                    logger.warning(f"HuggingFaceEmbeddings instantiation failed: {e}")
+                    logger.info("Falling back to TF-IDF embeddings (scikit-learn)")
+                    try:
+                        self.embeddings = FallbackEmbeddings()
+                    except Exception as e2:
+                        logger.error(f"FallbackEmbeddings failed: {e2}")
+                        raise
             else:
                 # Use TF-IDF fallback
                 self.embeddings = FallbackEmbeddings()
@@ -276,7 +302,9 @@ Answer:"""
 
     def is_indexed(self) -> bool:
         """Check if vector store already exists"""
-        return (self.vector_store_dir / "index.faiss").exists()
+        faiss_path = (self.vector_store_dir / "index.faiss")
+        fallback_path = (self.vector_store_dir / "simple_vector_store.pkl")
+        return faiss_path.exists() or fallback_path.exists()
 
     def build_index(self) -> bool:
         """
@@ -309,10 +337,11 @@ Answer:"""
             self.ingested_documents = documents
 
             # Create vector store
-            logger.info("Creating FAISS vector store...")
+            logger.info("Creating vector store...")
             self.vector_store_dir.mkdir(parents=True, exist_ok=True)
 
-            self.vectorstore = FAISS.from_documents(
+            # Use VectorStoreClass which may be FAISS or our SimpleVectorStore
+            self.vectorstore = VectorStoreClass.from_documents(
                 documents=documents,
                 embedding=self.embeddings
             )
@@ -364,11 +393,20 @@ Answer:"""
                 return False
 
             logger.info(f"Loading vector store from {self.vector_store_dir}")
-            self.vectorstore = FAISS.load_local(
-                str(self.vector_store_dir),
-                self.embeddings,
-                allow_dangerous_deserialization=True
-            )
+            # Use VectorStoreClass.load_local if available (FAISS or SimpleVectorStore)
+            try:
+                self.vectorstore = VectorStoreClass.load_local(
+                    str(self.vector_store_dir),
+                    self.embeddings,
+                    allow_dangerous_deserialization=True
+                )
+            except Exception:
+                # Fallback: try SimpleVectorStore loader
+                from pathlib import Path as _Path
+                if (_Path(self.vector_store_dir) / 'simple_vector_store.pkl').exists():
+                    self.vectorstore = VectorStoreClass.load_local(str(self.vector_store_dir), self.embeddings)
+                else:
+                    raise
 
             self.retriever = self.vectorstore.as_retriever(
                 search_type="similarity",
@@ -448,15 +486,9 @@ Answer:"""
             # Build context from retrieved documents
             context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-            # Create prompt
-            prompt = PromptTemplate(
-                input_variables=["context", "question"],
-                template=self.FINANCIAL_QA_PROMPT
-            )
-
-            # Generate answer
+            # Format the prompt directly (no dependency on langchain PromptTemplate)
+            formatted_prompt = self.FINANCIAL_QA_PROMPT.format(context=context, question=query)
             logger.info("Generating answer with LLM...")
-            formatted_prompt = prompt.format(context=context, question=query)
             answer = self.llm.invoke(formatted_prompt)
 
             # Extract sources
@@ -518,6 +550,83 @@ Answer:"""
             logger.info(f"Results saved to {save_to_json}")
 
         return results
+
+
+# Fallback simple vector store implementation (uses numpy + pickle)
+if not VECTORSTORE_AVAILABLE:
+    import numpy as _np
+    import pickle as _pickle
+    from types import SimpleNamespace as _SimpleNamespace
+
+    class SimpleVectorStore:
+        """Minimal in-memory vector store with cosine similarity retriever."""
+        def __init__(self, docs: List[Any], embeddings_matrix: List[List[float]], embedding_obj: Any):
+            self.docs = docs
+            self.embeddings = _np.array(embeddings_matrix)
+            self.embedding_obj = embedding_obj
+            self.index = _SimpleNamespace(ntotal=len(docs))
+
+        @classmethod
+        def from_documents(cls, documents: List[Any], embedding: Any):
+            # Extract texts
+            texts = []
+            for d in documents:
+                if hasattr(d, 'page_content'):
+                    texts.append(d.page_content)
+                elif isinstance(d, dict) and 'content' in d:
+                    texts.append(d['content'])
+                else:
+                    texts.append(str(d))
+            embs = embedding.embed_documents(texts)
+            return cls(documents, embs, embedding)
+
+        def save_local(self, path: str):
+            path_obj = Path(path)
+            path_obj.mkdir(parents=True, exist_ok=True)
+            with open(path_obj / 'simple_vector_store.pkl', 'wb') as f:
+                _pickle.dump({'docs': self.docs, 'embeddings': self.embeddings}, f)
+
+        @classmethod
+        def load_local(cls, path: str, embedding: Any, allow_dangerous_deserialization: bool = True):
+            path_obj = Path(path)
+            with open(path_obj / 'simple_vector_store.pkl', 'rb') as f:
+                data = _pickle.load(f)
+            return cls(data['docs'], data['embeddings'], embedding)
+
+        def as_retriever(self, search_type: str = 'similarity', search_kwargs: dict = None):
+            if search_kwargs is None:
+                search_kwargs = {'k': 5}
+            k = int(search_kwargs.get('k', 5))
+            return SimpleRetriever(self, k)
+
+    class SimpleRetriever:
+        def __init__(self, vectorstore: SimpleVectorStore, k: int = 5):
+            self.vs = vectorstore
+            self.k = k
+
+        def get_relevant_documents(self, query: str):
+            try:
+                qvec = _np.array(self.vs.embedding_obj.embed_query(query))
+            except Exception:
+                # fallback to zero vector
+                qvec = _np.zeros(self.vs.embeddings.shape[1])
+
+            if self.vs.embeddings.size == 0:
+                return []
+
+            # cosine similarity
+            emb = self.vs.embeddings
+            qnorm = _np.linalg.norm(qvec) + 1e-12
+            norms = _np.linalg.norm(emb, axis=1) + 1e-12
+            dots = emb.dot(qvec)
+            sims = dots / (norms * qnorm)
+            idx = _np.argsort(-sims)[:self.k]
+            return [self.vs.docs[i] for i in idx]
+
+    # Set the vectorstore class to the fallback
+    VectorStoreClass = SimpleVectorStore
+else:
+    VectorStoreClass = FAISS
 
 
 if __name__ == "__main__":
