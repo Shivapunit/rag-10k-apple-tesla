@@ -135,16 +135,6 @@ if __name__ == "__main__":
                 value=prefilled_url,
                 help="Ollama API endpoint. Default: http://localhost:11434/api/chat (local). For remote: https://your-ollama-server/api/chat. Set in Secrets as OLLAMA_API_URL.",
             )
-
-            st.info("""
-            **API Configuration Help:**
-            - **Local Ollama**: `http://localhost:11434/api/chat` (no API key needed)
-            - **Remote Ollama**: `https://your-server.com/api/chat` (requires API key in OLLAMA_API_KEY)
-            - **Streamlit Cloud Secrets** (recommended):
-              - Go to App settings → Secrets
-              - Add: `OLLAMA_API_KEY = your_key`
-              - Add: `OLLAMA_API_URL = your_url` (optional, uses default if not set)
-            """)
         else:
             st.caption("🖥️ Local Ollama Mode")
             # Update local status
@@ -159,9 +149,7 @@ if __name__ == "__main__":
                 if env_status == "🌐 Cloud":
                     st.info("ℹ️ Cloud detected. Switch to 'Use Ollama API' mode.")
                 else:
-                    st.error(f"Status: {status}")
-                    if details:
-                        st.caption(f"Details: {', '.join(details)}")
+                    st.caption(f"Status: {status}")
 
         st.divider()
         col1, col2 = st.columns(2)
@@ -174,6 +162,7 @@ if __name__ == "__main__":
         st.subheader("📊 System Info")
 
         # Load RAG pipeline with appropriate mode and API URL
+        # If Ollama is not available locally and we are not forcing API, we still load pipeline for retrieval
         if use_api or not ollama_available:
             rag = load_rag_pipeline(
                 use_api=use_api or not ollama_available,
@@ -200,249 +189,197 @@ if __name__ == "__main__":
 
     # Main content
     if not ollama_available and not use_api:
-        st.warning("⚠️ Ollama Not Running - Switch to API Mode")
-
-        status, details = get_ollama_status()
-
-        with st.expander("🔧 Setup Ollama", expanded=True):
+        st.warning("⚠️ **Ollama is not running.**")
+        st.markdown("""
+        The system is running in **Retrieval-Only Mode**. 
+        
+        You can search for documents, and the system will show you the most relevant excerpts. 
+        However, it cannot generate a synthesized answer without the LLM.
+        """)
+        
+        with st.expander("🛠️ How to enable AI Summaries (Install Ollama)"):
             st.markdown("""
             ### 1️⃣ Install Ollama
-
             Download from: **https://ollama.ai**
 
-            #### For Mac:
-              • Download .dmg file
-              • Open and follow installer
-              • Ollama starts automatically
-
-            #### For Linux:
-              • `curl https://ollama.ai/install.sh | sh`
-              • `systemctl enable ollama`
-
-            #### For Windows:
-              • Download .exe file
-              • Run installer
-              • Restart terminal
-
             ### 2️⃣ Start Ollama Service
-
             Open a terminal and run:
             ```bash
             ollama run mistral
             ```
-
-            This will:
-              • Download Mistral-7B model (~4GB)
-              • Start the Ollama server
-              • Keep it running in the background
-
-            ### 3️⃣ Verify Connection
-
-            Once running, you should see:
-              • Server listening at http://localhost:11434
-              • Model: mistral loaded
-              • Ready for inference
-
-            ### 🌐 For Cloud Deployment
-
-            Since Ollama can't run on Streamlit Cloud:
-              • Use **Google Colab**: notebooks/rag_colab.ipynb (click "Open in Colab")
-              • Or use **CLI**: `python test_runner.py`
-              • Or run **locally** after installing Ollama
             """)
+            
+    # Use rag if available (either with LLM or retrieval only)
+    if rag is not None:
+        tab1, tab2, tab3 = st.tabs(["🔍 Query", "📋 Test Questions", "📖 About"])
 
-        with st.expander("🐛 Troubleshooting"):
-            st.markdown(f"""
-            **Current Status**: {status}
-            **Details**: {', '.join(details) if details else 'N/A'}
+        with tab1:
+            st.subheader("Ask a Question")
 
-            #### Common Issues:
+            query = st.text_area(
+                "Enter your question about Apple or Tesla 10-K filings:",
+                placeholder="e.g., What was Apple's total revenue for FY 2024?",
+                height=100,
+            )
 
-            1. **"Server not accessible"**
-               • Make sure Ollama is running: `ollama run mistral`
-               • Check port 11434 is not blocked
-               • Try: `curl http://localhost:11434/api/tags`
+            col1, col2 = st.columns(2)
+            with col1:
+                submit = st.button("🚀 Get Answer", use_container_width=True)
+            with col2:
+                clear = st.button("🔄 Clear", use_container_width=True)
 
-            2. **"Connection timeout"**
-               • Ollama might be slow
-               • Wait 10 seconds and refresh page
-               • Check system resources
+            if clear:
+                st.rerun()
 
-            3. **"Model not loaded"**
-               • Download model: `ollama run mistral`
-               • Wait for download to complete
-               • Try again after 5 minutes
+            if submit and query:
+                with st.spinner("Retrieving and processing..."):
+                    try:
+                        result = rag.answer_question(query, top_k=top_k, temperature=temperature)
+                        
+                        # Check if answer is the fallback message or if we are in retrieval only mode
+                        is_fallback = "LLM Not Available" in result["answer"] or "LLM not available" in result["answer"]
 
-            4. **"Port already in use"**
-               • Kill process: `lsof -i :11434` (Mac/Linux)
-               • Or change Ollama port in config
-
-            #### Advanced: Manual Port Check
-            ```bash
-            curl -v http://localhost:11434/api/tags
-            ```
-
-            Should return JSON with available models.
-            """)
-
-        st.info("""
-        **Why Ollama is needed**:
-        This RAG system uses Ollama to run Mistral-7B locally.
-        Streamlit Cloud can't run local services, so you need:
-        • Local machine with Ollama installed, OR
-        • Google Colab (no setup needed), OR
-        • CLI testing (python test_runner.py)
-        """)
-    else:
-        # 'rag' was initialized above in the sidebar block; use it here
-        if rag is None:
-            st.error("Failed to initialize RAG pipeline. Please check the logs above.")
-        else:
-            tab1, tab2, tab3 = st.tabs(["🔍 Query", "📋 Test Questions", "📖 About"])
-
-            with tab1:
-                st.subheader("Ask a Question")
-
-                query = st.text_area(
-                    "Enter your question about Apple or Tesla 10-K filings:",
-                    placeholder="e.g., What was Apple's total revenue for FY 2024?",
-                    height=100,
-                )
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    submit = st.button("🚀 Get Answer", use_container_width=True)
-                with col2:
-                    clear = st.button("🔄 Clear", use_container_width=True)
-
-                if clear:
-                    st.rerun()
-
-                if submit and query:
-                    with st.spinner("Retrieving and generating answer..."):
-                        try:
-                            result = rag.answer_question(query, top_k=top_k, temperature=temperature)
-
-                            # Display answer
+                        # Display answer
+                        if is_fallback:
+                            st.subheader("🔍 Search Results")
+                            st.info("The LLM is unavailable. Displaying top retrieved document excerpts directly.")
+                            
+                            for i, source in enumerate(result["sources"], 1):
+                                with st.container():
+                                    st.markdown(f"#### {i}. {source.get('document', 'Unknown')}")
+                                    
+                                    # Metadata row
+                                    c1, c2, c3 = st.columns(3)
+                                    c1.caption(f"📄 Page: {source.get('page', 'N/A')}")
+                                    c2.caption(f"📌 Section: {source.get('item', 'N/A')}")
+                                    c3.caption(f"📂 File: {source.get('source_file', 'N/A')}")
+                                    
+                                    # Content
+                                    st.text_area(
+                                        label="Content",
+                                        value=source.get('content', ''),
+                                        height=150,
+                                        key=f"content_{i}",
+                                        disabled=True
+                                    )
+                                    st.divider()
+                        else:
                             st.success("✅ Answer Generated")
                             st.subheader("Answer")
                             st.write(result["answer"])
-
-                            # Display sources
+                            
                             if result["sources"]:
-                                st.subheader("📚 Sources")
-                                for i, source in enumerate(result["sources"], 1):
-                                    with st.expander(f"Source {i}: {source.get('document', 'Unknown')}"):
-                                        st.write(f"**Item**: {source.get('item', 'N/A')}")
-                                        st.write(f"**Page**: {source.get('page', 'N/A')}")
-                                        st.write(f"**File**: {source.get('source_file', 'N/A')}")
-                                        st.write(f"**Content**:\n{source.get('content', 'N/A')}")
+                                with st.expander("📚 View Source Documents"):
+                                    for i, source in enumerate(result["sources"], 1):
+                                        st.markdown(f"**{i}. {source.get('document', 'Unknown')}** (p. {source.get('page', 'N/A')})")
+                                        st.caption(source.get('content', 'N/A')[:300] + "...")
+                                        st.divider()
 
-                            # Display JSON for easy copy
-                            st.subheader("JSON Output")
-                            json_output = {
+                        # Display JSON for easy copy
+                        st.subheader("JSON Output")
+                        json_output = {
+                            "answer": result["answer"],
+                            "sources": [f"{s.get('document', 'Unknown')} - Item {s.get('item', 'N/A')} - p. {s.get('page', 'N/A')}"
+                                       for s in result["sources"]]
+                        }
+                        st.code(json.dumps(json_output, indent=2), language="json")
+
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+            elif submit:
+                st.warning("Please enter a question")
+
+        with tab2:
+            st.subheader("🧪 Test Questions")
+            st.write("Run the system against the provided test questions")
+
+            test_questions = [
+                {"id": 1, "q": "What was Apple's total revenue for the fiscal year ended September 28, 2024?"},
+                {"id": 2, "q": "How many shares of common stock were issued and outstanding as of October 18, 2024?"},
+                {"id": 3, "q": "What is the total amount of term debt (current + non-current) reported by Apple as of September 28, 2024?"},
+                {"id": 4, "q": "On what date was Apple's 10-K report for 2024 signed and filed with the SEC?"},
+                {"id": 5, "q": "Does Apple have any unresolved staff comments from the SEC as of this filing? How do you know?"},
+                {"id": 6, "q": "What was Tesla's total revenue for the year ended December 31, 2023?"},
+                {"id": 7, "q": "What percentage of Tesla's total revenue in 2023 came from Automotive Sales (excluding Leasing)?"},
+                {"id": 8, "q": "What is the primary reason Tesla states for being highly dependent on Elon Musk?"},
+                {"id": 9, "q": "What types of vehicles does Tesla currently produce and deliver?"},
+                {"id": 10, "q": "What is the purpose of Tesla's 'lease pass-through fund arrangements'?"},
+                {"id": 11, "q": "What is Tesla's stock price forecast for 2025?"},
+                {"id": 12, "q": "Who is the CFO of Apple as of 2025?"},
+                {"id": 13, "q": "What color is Tesla's headquarters painted?"},
+            ]
+
+            if st.button("▶️ Run All Test Questions"):
+                st.info("Processing all questions... (this may take a few minutes)")
+
+                results = []
+                progress_bar = st.progress(0)
+
+                for idx, test_q in enumerate(test_questions):
+                    with st.spinner(f"Processing Q{test_q['id']}..."):
+                        try:
+                            result = rag.answer_question(test_q["q"], top_k=5)
+                            results.append({
+                                "question_id": test_q["id"],
                                 "answer": result["answer"],
-                                "sources": [f"{s.get('document', 'Unknown')} - Item {s.get('item', 'N/A')} - p. {s.get('page', 'N/A')}"
+                                "sources": [f"{s.get('document')} - Item {s.get('item')} - p. {s.get('page')}"
                                            for s in result["sources"]]
-                            }
-                            st.code(json.dumps(json_output, indent=2), language="json")
-
+                            })
                         except Exception as e:
-                            st.error(f"Error: {str(e)}")
-                elif submit:
-                    st.warning("Please enter a question")
+                            results.append({
+                                "question_id": test_q["id"],
+                                "answer": f"Error: {str(e)}",
+                                "sources": []
+                            })
 
-            with tab2:
-                st.subheader("🧪 Test Questions")
-                st.write("Run the system against the provided test questions")
+                    progress_bar.progress((idx + 1) / len(test_questions))
 
-                test_questions = [
-                    {"id": 1, "q": "What was Apple's total revenue for the fiscal year ended September 28, 2024?"},
-                    {"id": 2, "q": "How many shares of common stock were issued and outstanding as of October 18, 2024?"},
-                    {"id": 3, "q": "What is the total amount of term debt (current + non-current) reported by Apple as of September 28, 2024?"},
-                    {"id": 4, "q": "On what date was Apple's 10-K report for 2024 signed and filed with the SEC?"},
-                    {"id": 5, "q": "Does Apple have any unresolved staff comments from the SEC as of this filing? How do you know?"},
-                    {"id": 6, "q": "What was Tesla's total revenue for the year ended December 31, 2023?"},
-                    {"id": 7, "q": "What percentage of Tesla's total revenue in 2023 came from Automotive Sales (excluding Leasing)?"},
-                    {"id": 8, "q": "What is the primary reason Tesla states for being highly dependent on Elon Musk?"},
-                    {"id": 9, "q": "What types of vehicles does Tesla currently produce and deliver?"},
-                    {"id": 10, "q": "What is the purpose of Tesla's 'lease pass-through fund arrangements'?"},
-                    {"id": 11, "q": "What is Tesla's stock price forecast for 2025?"},
-                    {"id": 12, "q": "Who is the CFO of Apple as of 2025?"},
-                    {"id": 13, "q": "What color is Tesla's headquarters painted?"},
-                ]
+                st.success("✅ All questions processed!")
 
-                if st.button("▶️ Run All Test Questions"):
-                    st.info("Processing all questions... (this may take a few minutes)")
+                # Display results
+                st.subheader("Results")
+                st.code(json.dumps(results, indent=2), language="json")
 
-                    results = []
-                    progress_bar = st.progress(0)
+                # Download button
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label="📥 Download Results (JSON)",
+                        data=json.dumps(results, indent=2),
+                        file_name="test_results.json",
+                        mime="application/json",
+                    )
 
-                    for idx, test_q in enumerate(test_questions):
-                        with st.spinner(f"Processing Q{test_q['id']}..."):
-                            try:
-                                result = rag.answer_question(test_q["q"], top_k=5)
-                                results.append({
-                                    "question_id": test_q["id"],
-                                    "answer": result["answer"],
-                                    "sources": [f"{s.get('document')} - Item {s.get('item')} - p. {s.get('page')}"
-                                               for s in result["sources"]]
-                                })
-                            except Exception as e:
-                                results.append({
-                                    "question_id": test_q["id"],
-                                    "answer": f"Error: {str(e)}",
-                                    "sources": []
-                                })
+        with tab3:
+            st.subheader("📖 About This System")
 
-                        progress_bar.progress((idx + 1) / len(test_questions))
+            st.write("""
+            ### What is RAG?
+            **Retrieval-Augmented Generation (RAG)** combines:
+            - **Retrieval**: Fast semantic search over document chunks
+            - **Augmentation**: Injecting retrieved context into LLM prompts
+            - **Generation**: Using LLM to synthesize answers from context
 
-                    st.success("✅ All questions processed!")
+            ### Architecture
+            1. **Document Ingestion**: PDFs parsed and chunked
+            2. **Embeddings**: Chunks embedded using sentence-transformers
+            3. **Vector Store**: FAISS for fast similarity search
+            4. **Retrieval**: Top-5 chunks retrieved per query
+            5. **LLM**: Mistral generates answer using retrieved context
 
-                    # Display results
-                    st.subheader("Results")
-                    st.code(json.dumps(results, indent=2), language="json")
+            ### Key Features
+            ✅ No proprietary API required (open-source LLM)
+            ✅ Source citations with page numbers
+            ✅ Out-of-scope question handling
+            ✅ Metadata preservation (document, section, page)
+            ✅ Efficient chunking with semantic overlap
 
-                    # Download button
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.download_button(
-                            label="📥 Download Results (JSON)",
-                            data=json.dumps(results, indent=2),
-                            file_name="test_results.json",
-                            mime="application/json",
-                        )
+            ### Sources
+            - Apple 10-K FY2024 (ended Sept 28, 2024)
+            - Tesla 10-K FY2023 (ended Dec 31, 2023)
 
-            with tab3:
-                st.subheader("📖 About This System")
-
-                st.write("""
-                ### What is RAG?
-                **Retrieval-Augmented Generation (RAG)** combines:
-                - **Retrieval**: Fast semantic search over document chunks
-                - **Augmentation**: Injecting retrieved context into LLM prompts
-                - **Generation**: Using LLM to synthesize answers from context
-
-                ### Architecture
-                1. **Document Ingestion**: PDFs parsed and chunked
-                2. **Embeddings**: Chunks embedded using sentence-transformers
-                3. **Vector Store**: FAISS for fast similarity search
-                4. **Retrieval**: Top-5 chunks retrieved per query
-                5. **LLM**: Mistral generates answer using retrieved context
-
-                ### Key Features
-                ✅ No proprietary API required (open-source LLM)
-                ✅ Source citations with page numbers
-                ✅ Out-of-scope question handling
-                ✅ Metadata preservation (document, section, page)
-                ✅ Efficient chunking with semantic overlap
-
-                ### Sources
-                - Apple 10-K FY2024 (ended Sept 28, 2024)
-                - Tesla 10-K FY2023 (ended Dec 31, 2023)
-
-                ### Deployment Options
-                - **Local**: `streamlit run app.py` (requires Ollama)
-                - **CLI**: `python test_runner.py`
-                - **Google Colab**: `notebooks/rag_colab.ipynb`
-                """)
+            ### Deployment Options
+            - **Local**: `streamlit run app.py` (requires Ollama)
+            - **CLI**: `python test_runner.py`
+            - **Google Colab**: `notebooks/rag_colab.ipynb`
+            """)

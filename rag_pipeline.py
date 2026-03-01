@@ -8,12 +8,16 @@ Supports:
 """
 
 import logging
+import warnings
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 import json
 import os
 import requests
 import pickle
+
+# Suppress LangChain deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Try to import Embeddings base class
 try:
@@ -188,6 +192,10 @@ class FallbackEmbeddings(Embeddings):
         if isinstance(text, list):
             return self.embed_documents(text)
         return self.embed_query(text)
+        
+    def embed(self, text: str) -> List[float]:
+        """Alias for embed_query"""
+        return self.embed_query(text)
 
     def save(self, path: Path):
         try:
@@ -279,7 +287,12 @@ Answer:"""
         self.qa_chain = None
         self.ingested_documents = []
 
-        self._initialize()
+        # Initialize safely
+        try:
+            self._initialize()
+        except Exception as e:
+            logger.error(f"RAGPipeline initialization failed: {e}")
+            # Continue with uninitialized components (will fail gracefully later)
 
     def _initialize(self):
         """Initialize embedding and LLM models"""
@@ -302,7 +315,8 @@ Answer:"""
                 logger.info("Using TF-IDF fallback embeddings (scikit-learn)")
         except Exception as e:
             logger.error(f"Embeddings initialization error: {e}")
-            raise
+            # Do not raise here, allow pipeline to init without embeddings (will fail later if needed)
+            self.embeddings = None
 
         # Initialize LLM (Ollama - local or API) but do not raise if unavailable
         logger.info(f"Initializing LLM: {self.llm_model_name}")
@@ -357,6 +371,10 @@ Answer:"""
 
             if not self.data_dir.exists():
                 logger.error(f"Data directory not found: {self.data_dir}")
+                return False
+
+            if not self.embeddings:
+                logger.error("Embeddings model not initialized. Cannot build index.")
                 return False
 
             # Ingest documents
@@ -443,6 +461,10 @@ Answer:"""
         try:
             if not self.is_indexed():
                 logger.warning("Vector store not found. Call build_index() first.")
+                return False
+
+            if not self.embeddings:
+                logger.error("Embeddings model not initialized. Cannot load index.")
                 return False
 
             logger.info(f"Loading vector store from {self.vector_store_dir}")
@@ -550,7 +572,11 @@ Answer:"""
                     page_hits = self.page_retriever.retrieve(query, k=k)
                     retrieved_docs = [doc for doc, score in page_hits]
                 elif self.retrieval_mode == 'vector':
-                    retrieved_docs = self.retriever.get_relevant_documents(query)[:k]
+                    # Use invoke instead of get_relevant_documents
+                    if hasattr(self.retriever, 'invoke'):
+                        retrieved_docs = self.retriever.invoke(query)[:k]
+                    else:
+                        retrieved_docs = self.retriever.get_relevant_documents(query)[:k]
                 else:  # hybrid
                     # Combine pageindex and vector results; simple merge and dedupe
                     results = []
@@ -562,7 +588,10 @@ Answer:"""
                     if self.hybrid_retriever:
                         vector_hits = self.hybrid_retriever.retrieve(query)
                     else:
-                        vector_hits = self.retriever.get_relevant_documents(query)[:k]
+                        if hasattr(self.retriever, 'invoke'):
+                            vector_hits = self.retriever.invoke(query)[:k]
+                        else:
+                            vector_hits = self.retriever.get_relevant_documents(query)[:k]
                     
                     results.extend(vector_hits)
                     # dedupe preserving order
@@ -750,6 +779,10 @@ if not VECTORSTORE_AVAILABLE:
         def get_relevant_documents(self, query: str):
             results = self.vs.similarity_search_with_score(query, k=self.k)
             return [doc for doc, score in results]
+            
+        def invoke(self, query: str):
+            """Alias for get_relevant_documents to match LangChain API"""
+            return self.get_relevant_documents(query)
 
     # Set the vectorstore class to the fallback
     VectorStoreClass = SimpleVectorStore
