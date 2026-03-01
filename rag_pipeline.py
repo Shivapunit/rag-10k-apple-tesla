@@ -75,6 +75,23 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+class MockLLM:
+    """
+    A fallback mock LLM that provides a placeholder response
+    when the real LLM is unavailable.
+    """
+    def __init__(self):
+        self.temperature = 0.3
+
+    def invoke(self, prompt: str) -> str:
+        return (
+            "**[System Notification]**\n\n"
+            "The local AI model (Ollama) is currently unreachable. "
+            "However, the system has successfully retrieved the relevant documents for your query. "
+            "Please review the **Sources** section below to find the specific answer."
+        )
+
+
 class OllamaAPILLM:
     """Ollama API-based LLM client with authentication"""
 
@@ -329,13 +346,14 @@ Answer:"""
                     test_response = self.llm.invoke("Hi")
                     if isinstance(test_response, str) and test_response.lower().startswith("error"):
                         logger.warning(f"Ollama API test response indicates error: {test_response}")
-                        # We set LLM to None if it's not working, to avoid crashing later
-                        self.llm = None
+                        # Fallback to MockLLM if API fails
+                        logger.info("Switching to MockLLM due to API error.")
+                        self.llm = MockLLM()
                     else:
                         logger.info("Ollama API connected successfully")
                 except Exception as e:
-                    logger.error(f"Ollama API initialization error (non-fatal): {e}")
-                    self.llm = None
+                    logger.error(f"Ollama API initialization error: {e}. Switching to MockLLM.")
+                    self.llm = MockLLM()
             else:
                 # Local Ollama if available
                 if Ollama is not None:
@@ -345,13 +363,14 @@ Answer:"""
                         self.llm.invoke("Hi")
                         logger.info(f"Local Ollama {self.llm_model_name} ready")
                     except Exception as e:
-                        logger.error(f"Local Ollama initialization error (non-fatal): {e}")
-                        self.llm = None
+                        logger.error(f"Local Ollama initialization error: {e}. Switching to MockLLM.")
+                        self.llm = MockLLM()
                 else:
-                    logger.info("Local Ollama client not available; continuing without an LLM")
+                    logger.info("Local Ollama client not available. Switching to MockLLM.")
+                    self.llm = MockLLM()
         except Exception as e:
-            logger.error(f"Critical error during LLM initialization (suppressed): {e}")
-            self.llm = None
+            logger.error(f"Critical error during LLM initialization (suppressed): {e}. Switching to MockLLM.")
+            self.llm = MockLLM()
 
     def is_indexed(self) -> bool:
         """Check if vector store already exists"""
