@@ -1,6 +1,10 @@
 """
 RAG Pipeline - Core answer_question() implementation
 Retrieval-Augmented Generation for 10-K financial documents
+
+Supports:
+- Pure vector search (FAISS)
+- Hybrid retrieval (BM25 + FAISS)
 """
 
 import logging
@@ -21,6 +25,15 @@ from langchain.chains import RetrievalQA
 
 # Document processing
 from ingest import DocumentIngester
+
+# Hybrid retrieval
+try:
+    from hybrid_retriever import HybridRetriever
+    HYBRID_RETRIEVAL_AVAILABLE = True
+except ImportError:
+    HYBRID_RETRIEVAL_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("rank-bm25 not available. Hybrid retrieval disabled.")
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -56,6 +69,9 @@ Answer:"""
         top_k: int = 5,
         chunk_size: int = 500,
         chunk_overlap: int = 100,
+        use_hybrid_retrieval: bool = True,
+        bm25_weight: float = 0.3,
+        vector_weight: float = 0.7,
     ):
         """
         Initialize RAG pipeline
@@ -68,6 +84,9 @@ Answer:"""
             top_k: Number of chunks to retrieve
             chunk_size: Size of text chunks
             chunk_overlap: Overlap between chunks
+            use_hybrid_retrieval: Use BM25 + Vector hybrid search
+            bm25_weight: Weight for BM25 scores (0-1)
+            vector_weight: Weight for vector scores (0-1)
         """
         self.data_dir = Path(data_dir)
         self.vector_store_dir = Path(vector_store_dir)
@@ -76,13 +95,18 @@ Answer:"""
         self.top_k = top_k
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.use_hybrid_retrieval = use_hybrid_retrieval and HYBRID_RETRIEVAL_AVAILABLE
+        self.bm25_weight = bm25_weight
+        self.vector_weight = vector_weight
 
         # Initialize components
         self.embeddings = None
         self.vectorstore = None
         self.llm = None
         self.retriever = None
+        self.hybrid_retriever = None
         self.qa_chain = None
+        self.ingested_documents = []
 
         self._initialize()
 
@@ -137,6 +161,9 @@ Answer:"""
 
             logger.info(f"Ingested {len(documents)} chunks from PDFs")
 
+            # Store documents for hybrid retrieval
+            self.ingested_documents = documents
+
             # Create vector store
             logger.info("Creating FAISS vector store...")
             self.vector_store_dir.mkdir(parents=True, exist_ok=True)
@@ -155,6 +182,23 @@ Answer:"""
                 search_type="similarity",
                 search_kwargs={"k": self.top_k}
             )
+
+            # Initialize hybrid retriever if available
+            if self.use_hybrid_retrieval:
+                try:
+                    logger.info("Initializing hybrid retriever (BM25 + Vector)...")
+                    self.hybrid_retriever = HybridRetriever(
+                        vectorstore=self.vectorstore,
+                        documents=documents,
+                        top_k=self.top_k,
+                        bm25_weight=self.bm25_weight,
+                        vector_weight=self.vector_weight
+                    )
+                    logger.info("Hybrid retriever initialized successfully")
+                except Exception as e:
+                    logger.warning(f"Could not initialize hybrid retriever: {e}")
+                    logger.info("Falling back to vector search only")
+                    self.use_hybrid_retrieval = False
 
             logger.info("Index built successfully")
             return True
@@ -347,4 +391,3 @@ if __name__ == "__main__":
     print("\nQuery:", test_query)
     print("\nAnswer:", result["answer"])
     print("\nSources:", result["sources"])
-

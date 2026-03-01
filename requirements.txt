@@ -4,7 +4,11 @@ langchain-community==0.0.38
 pypdf==4.0.1
 
 # Vector store (FAISS for local storage)
-faiss-cpu==1.7.4
+# Updated to 1.13.2 for Python 3.13 compatibility
+faiss-cpu>=1.13.0,<2.0.0
+
+# Hybrid retrieval (BM25 + Vector Search)
+rank-bm25==0.2.2
 
 # Embeddings (open-source)
 sentence-transformers==2.2.2
